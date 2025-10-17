@@ -1,0 +1,20 @@
+{
+  "name": "discord-music-bot-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "React UI for controlling the Discord music bot.",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "axios": "^1.6.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-scripts": "^5.0.0"
+  }
+}
