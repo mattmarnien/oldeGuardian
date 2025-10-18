@@ -4,8 +4,365 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Discord Music Bot Controller</title>
+    <!-- Materialize CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+    <!-- Material Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <style>
+      /* Theme variables - primary color set to hsl(219,60%,53%) */
+      :root {
+        --primary: hsl(219,60%,53%); /* requested primary */
+        /* subtle blends for UI accents (lower percentages = subtler) */
+        --primary-06: color-mix(in srgb, var(--primary) 6%, rgb(62, 90, 165));
+        --primary-08: color-mix(in srgb, var(--primary) 8%, rgb(150, 143, 241));
+        --primary-10: color-mix(in srgb, var(--primary) 10%, rgb(139, 143, 248));
+        --primary-12: color-mix(in srgb, var(--primary) 12%, rgb(155, 162, 249));
+        --primary-16: color-mix(in srgb, var(--primary) 16%, rgb(63, 70, 144));
+        --primary-22: color-mix(in srgb, var(--primary) 22%, rgb(52, 82, 170));
+        --primary-08-alpha: rgba(34,87,207,0.06); /* soft shadow fallback */
+      }
+      /* Slightly smaller base font for denser UI and compact controls */
+      body { 
+        font-size: 14px;
+        background-color: #e6e6e6;
+      }
+      /* small icon drop target styling */
+      .root-drop-icon { display: inline-block; width: 32px; height: 32px; line-height: 32px; text-align: center; vertical-align: middle; margin-left: 8px; border-radius: 4px; }
+      .root-drop-icon.teal { background-color: color-mix(in srgb, var(--primary) 10%, white); }
+      .connection-bottom { margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px; }
+      /* Header size adjustments */
+      h1.header { font-size: 18px; margin-bottom: 6px; }
+      h2 { font-size: 15px; margin: 6px 0; }
+      h3 { font-size: 13px; margin: 4px 0; }
+      .root-drop-icon i { font-size: 18px; }
+
+    /* Hover and clickable styles (made higher-contrast for visibility) */
+    .group-header { padding: 6px 8px; border-radius: 6px; transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease; border: 1px solid rgba(0,0,0,0.06); }
+    /* clearer hover/focus: stronger color, thicker border, subtle elevation */
+  /* toned-down hover/focus for headers */
+  .group-header:hover, .group-header:focus { background-color: var(--primary-08); border-color: color-mix(in srgb, var(--primary) 18%, black 6%); box-shadow: 0 6px 14px var(--primary-08-alpha); transform: translateY(-1px); outline: none; }
+
+    .list-item { padding: 8px 10px; border-radius: 6px; transition: background-color 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, transform 0.12s ease; border: 1px solid rgba(0,0,0,0.04); margin-bottom: 6px; }
+    /* high-contrast hover to override zebra and be clearly visible */
+    ul > li.list-item:hover, .list-area ul > li.list-item:hover {
+      /* subtler hover: lower-intensity primary blend */
+      background-color: var(--primary-06) !important;
+      border-color: color-mix(in srgb, var(--primary) 18%, black 6%) !important;
+      box-shadow: 0 6px 18px color-mix(in srgb, var(--primary) 6%, black 86%);
+      transform: translateY(-0.6px);
+      color: rgba(0,20,24,0.98);
+      z-index: 2;
+    }
+    /* keyboard focus visible state for accessibility */
+  ul > li.list-item:focus, .group-header:focus { outline: 3px solid color-mix(in srgb, var(--primary) 14%, white); outline-offset: 2px; }
+
+    .list-item, .group-header { cursor: pointer; }
+    .list-area:hover {  }
+
+  /* alternating zebra backgrounds for readability (kept subtle) */
+  ul > li.list-item:nth-child(odd) { background-color: rgba(0,0,0,0.01); }
+  ul > li.list-item:nth-child(even) { background-color: rgba(255,255,255,0.02); }
+  /* Select dropdown options (Materialize) */
+  .select-dropdown li.hover, .select-dropdown li:hover, .select-dropdown li.active {
+    background-color: var(--primary-08) !important;
+    color: #fff !important;
+  }
+  .select-dropdown li.selected { background-color: var(--primary-06) !important; color: #fff !important; }
+
+  /* Stronger overrides for option text and labels inside dropdowns (Materialize sets these to teal) */
+  .select-dropdown.dropdown-content li>span,
+  .select-dropdown.dropdown-content li>span *,
+  .select-dropdown.dropdown-content li>a,
+  .dropdown-content li>span,
+  .dropdown-content li>span *,
+  .dropdown-content li>a {
+    color: inherit !important; /* inherit from li so hovered/selected colors apply */
+  }
+  /* If an option explicitly sets teal via utility classes, force the primary color */
+  .select-dropdown.dropdown-content li>span.teal, .select-dropdown.dropdown-content li>span.teal *,
+  .dropdown-content li>span.teal, .dropdown-content li>span.teal * {
+    color: var(--primary) !important;
+  }
+
+  /* Input focus underline and label (slightly subtler than before) */
+  .input-field input:focus {
+    border-bottom: 1px solid color-mix(in srgb, var(--primary) 14%, white) !important;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--primary) 10%, white) !important;
+  }
+  .input-field input:focus + label {
+    color: color-mix(in srgb, var(--primary) 14%, white) !important;
+  }
+
+  /* Strengthened, high-specificity overrides for input/select focus and dropdowns */
+  /* Target Materialize select wrapper and the generated dropdown */
+  .select-wrapper input.select-dropdown:focus,
+  .select-wrapper input.select-dropdown:focus:focus-visible,
+  .select-wrapper input.select-dropdown:active,
+  .select-wrapper input.select-dropdown:focus + .caret {
+    border-bottom: 2px solid var(--primary) !important;
+    box-shadow: 0 2px 0 var(--primary) !important;
+    color: var(--primary) !important;
+  }
+
+  /* The caret and dropdown arrow often show accent; force to primary */
+  .select-wrapper .caret {
+    color: var(--primary) !important;
+    fill: var(--primary) !important;
+  }
+
+  /* Dropdown content list items used by Materialize */
+  .select-wrapper .dropdown-content li,
+  .select-dropdown.dropdown-content li,
+  .dropdown-content.select-dropdown li {
+    color: inherit !important;
+  }
+
+  /* When list items are hovered/active/selected, use primary blends */
+  .select-wrapper .dropdown-content li:hover,
+  .select-wrapper .dropdown-content li.active,
+  .select-wrapper .dropdown-content li.selected,
+  .select-dropdown.dropdown-content li:hover,
+  .select-dropdown.dropdown-content li.active,
+  .select-dropdown.dropdown-content li.selected {
+    background-color: var(--primary-08) !important;
+    color: #fff !important;
+  }
+
+  /* Materialize sometimes injects spans/anchors with inline teal classes; prefer primary */
+  .select-wrapper .dropdown-content li *[class*="teal"],
+  .select-wrapper .dropdown-content li *[class*="green"],
+  .dropdown-content li *[class*="teal"],
+  .dropdown-content li *[class*="green"] {
+    color: inherit !important;
+    background-color: transparent !important;
+  }
+
+  /* Explicitly style native form elements on focus to use our primary */
+  input:focus, textarea:focus, select:focus, input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: none !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 10%, transparent) !important;
+  }
+
+  /* Dark-mode adjustments for stronger selectors */
+  @media (prefers-color-scheme: dark) {
+    .select-wrapper input.select-dropdown:focus,
+    .select-wrapper input.select-dropdown:active {
+      border-bottom: 2px solid color-mix(in srgb, var(--primary) 12%, black 64%) !important;
+      box-shadow: none !important;
+      color: var(--primary) !important;
+    }
+    .select-wrapper .dropdown-content li:hover,
+    .select-wrapper .dropdown-content li.active {
+      background-color: color-mix(in srgb, var(--primary) 12%, black 64%) !important;
+      color: #fff !important;
+    }
+    input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 8%, black 80%) !important; }
+  }
+
+  /* Volume slider / range input styling */
+  .range-field input[type=range] { height: 6px; }
+  /* WebKit track */
+  .range-field input[type=range]::-webkit-slider-runnable-track {
+    height: 6px;
+    background: rgba(0,0,0,0.06);
+    border-radius: 6px;
+  }
+  .range-field input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--primary); box-shadow: 0 2px 8px rgba(17,60,160,0.14);
+    margin-top: -5px;
+  }
+  /* Firefox */
+  .range-field input[type=range]::-moz-range-track { height: 6px; background: rgba(0,0,0,0.06); border-radius: 6px; }
+  .range-field input[type=range]::-moz-range-thumb { width: 16px; height: 16px; background: var(--primary); border: none; border-radius: 50%; box-shadow: 0 2px 8px rgba(17,60,160,0.14); }
+
+  /* Materialize exposes a .thumb element for styling the slider handle; ensure it matches */
+  .range-field .thumb, .range-field .thumb .value {
+    background: var(--primary) !important;
+    color: #fff !important;
+    box-shadow: 0 2px 8px rgba(17,60,160,0.14) !important;
+    border: 2px solid rgba(255,255,255,0.04) !important;
+  }
+
+  /* For WebKit/Blink browsers ensure focused/active thumb matches primary */
+  input[type=range]:active::-webkit-slider-thumb, input[type=range]:focus::-webkit-slider-thumb {
+    background: var(--primary) !important;
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--primary) 18%, black 82%) !important;
+  }
+
+  /* Firefox focused thumb */
+  input[type=range]:focus::-moz-range-thumb { background: var(--primary) !important; box-shadow: 0 2px 10px color-mix(in srgb, var(--primary) 18%, black 82%) !important; }
+
+  @media (prefers-color-scheme: dark) {
+    .range-field .thumb, .range-field .thumb .value { background: var(--primary) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.6) !important; }
+    input[type=range]::-webkit-slider-thumb { background: var(--primary) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.6) !important; }
+    input[type=range]::-moz-range-thumb { background: var(--primary) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.6) !important; }
+  }
+
+  /* Extra fallback & high-specificity rules: force the thumb to a solid hex color
+     to help against extensions that recolor elements (e.g. Dark Reader). */
+  /* Primary hex fallback for HSL(219,60%,53%) ~= #3F72CF */
+  input[type=range] { -webkit-appearance: none !important; appearance: none !important; }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    background: #3F72CF !important;
+    border: 2px solid rgba(255,255,255,0.06) !important;
+    box-shadow: 0 2px 8px rgba(63,114,207,0.16) !important;
+    margin-top: -5px !important;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    background: #3F72CF !important;
+    border: 2px solid rgba(255,255,255,0.06) !important;
+    box-shadow: 0 2px 8px rgba(63,114,207,0.16) !important;
+  }
+  /* Internet Explorer / Edge (legacy) thumb selectors */
+  input[type=range]::-ms-thumb {
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    background: #3F72CF !important;
+    border: 2px solid rgba(255,255,255,0.06) !important;
+    box-shadow: 0 2px 8px rgba(63,114,207,0.16) !important;
+  }
+
+  /* If a browser extension like Dark Reader is active it may still recolor elements.
+     The most reliable ways to validate are: disable the extension, or inspect the
+     ::-webkit-slider-thumb / ::-moz-range-thumb pseudo-element in DevTools to
+     see the winning rule. */
+
+  /* Ensure small controls match */
+  .btn-flat, .btn-small { color: var(--primary) !important; }
+  /* Dark-mode specific tweaks */
+  @media (prefers-color-scheme: dark) {
+    :root { --bg-elev: rgba(255,255,255,0.03); }
+    body { background-color: #0f1113; color: #e6eef6; }
+    /* reduce hover intensity for dark backgrounds */
+    .group-header:hover, .group-header:focus { background-color: color-mix(in srgb, var(--primary) 6%, black 84%) !important; border-color: color-mix(in srgb, var(--primary) 12%, black 70%) !important; box-shadow: none !important; transform: none !important; }
+    ul > li.list-item:hover, .list-area ul > li.list-item:hover { background-color: color-mix(in srgb, var(--primary) 4%, black 86%) !important; border-color: rgba(255,255,255,0.03) !important; box-shadow: none !important; transform: none !important; }
+    /* select dropdown options in dark mode */
+    .select-dropdown li.hover, .select-dropdown li:hover, .select-dropdown li.active { background-color: color-mix(in srgb, var(--primary) 12%, black 64%) !important; color: #fff !important; }
+    .select-dropdown { background-color: #0b0c0d !important; color: #e6eef6 !important; }
+    /* inputs */
+    .input-field input:focus { border-bottom: 1px solid color-mix(in srgb, var(--primary) 12%, black 64%) !important; box-shadow: none !important; }
+    .input-field input:focus + label { color: color-mix(in srgb, var(--primary) 12%, black 64%) !important; }
+    /* range slider adjustments for dark */
+    .range-field input[type=range]::-webkit-slider-runnable-track { background: rgba(255,255,255,0.06); }
+    .range-field input[type=range]::-webkit-slider-thumb { background: var(--primary) !important; box-shadow: 0 2px 6px rgba(0,0,0,0.6) !important; }
+    .range-field input[type=range]::-moz-range-track { background: rgba(255,255,255,0.06); }
+    .range-field input[type=range]::-moz-range-thumb { box-shadow: 0 2px 6px rgba(0,0,0,0.6) !important; }
+  }
+  /* Materialize component overrides to align with --primary */
+  /* Buttons */
+  .btn, .btn-large, .waves-effect.btn {
+    background-color: var(--primary) !important;
+    box-shadow: 0 2px 6px rgba(17,60,160,0.12) !important;
+  }
+  .btn:hover, .btn-large:hover, .waves-effect.btn:hover {
+    background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important;
+    box-shadow: 0 6px 18px rgba(17,60,160,0.14) !important;
+  }
+  /* Compact button variant: visually matches .btn but slightly smaller/tighter */
+  .btn-compact {
+    background-color: var(--primary) !important;
+    color: white !important;
+    padding: 0 8px !important;
+    min-width: 36px !important;
+    height: 30px !important;
+    line-height: 30px !important;
+    font-size: 13px !important;
+    border-radius: 6px !important;
+    box-shadow: 0 2px 6px rgba(17,60,160,0.10) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  .btn-compact .material-icons { font-size: 18px !important; }
+  .btn-compact:hover { transform: translateY(-1px); background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important; box-shadow: 0 6px 12px rgba(17,60,160,0.14) !important; }
+
+  /* Centered player controls container (placed under header) */
+  .player-controls {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    gap: 10px !important;
+   
+    padding: 4px 8px !important;
+  }
+  /* Slightly tighter controls on small screens */
+  @media (max-width: 600px) {
+    .player-controls { gap: 6px !important; margin: 6px auto 10px auto !important; }
+    .player-controls .btn { padding: 0 8px !important; height: 34px !important; }
+  }
+  /* Modal footer buttons */
+  .modal .modal-footer .btn, .modal .modal-footer .btn-large {
+    background-color: var(--primary) !important;
+    color: white !important;
+  }
+  .modal .modal-footer .btn:hover { background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important; }
+
+  /* Input focus underline and label color (Materialize input styles) */
+  .input-field input:focus {
+    border-bottom: 1px solid var(--primary) !important;
+    box-shadow: 0 1px 0 var(--primary) !important;
+  }
+  .input-field input:focus + label {
+    color: var(--primary) !important;
+  }
+
+  /* Waves ripple color override (approximate by tinting the pseudo-element background used by waves) */
+  .waves-effect .waves-ripple {
+    background-color: color-mix(in srgb, var(--primary) 30%, white) !important;
+    opacity: 0.65 !important;
+  }
+
+  /* Ensure flat buttons and small controls match */
+  .btn-flat, .btn-small { color: var(--primary) !important; }
+  /* Small icon button tweaks for player controls */
+  .btn .material-icons { vertical-align: middle; }
+  .btn[disabled] { opacity: 0.5; pointer-events: none; }
+  .btn { padding: 0 10px; min-width: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .btn:hover { transform: translateY(-1px); }
+  /* Loop glow when active: white outer glow around icon */
+  .player-controls .btn.loop-on { box-shadow: 0 0 12px 2px rgba(255,255,255,0.9), 0 6px 18px rgba(17,60,160,0.12) !important; }
+  .player-controls .btn.loop-on .material-icons { filter: drop-shadow(0 0 6px rgba(255,255,255,0.95)); }
+  /* Strong override: replace Materialize 'teal' utility classes used in the app
+     with our --primary color. These rules use !important and specific selectors
+     so they win over the default Materialize declarations. */
+  .teal, .teal.lighten-1, .teal.lighten-2, .teal.lighten-3, .teal.lighten-4,
+  .teal.darken-1, .teal.darken-2, .teal.darken-3, .teal.darken-4 {
+    background-color: var(--primary) !important;
+    color: #fff !important;
+  }
+  /* Text-only teal utilities */
+  .teal-text { color: var(--primary) !important; }
+  /* Border/hover variants that may apply */
+  .teal.hoverable, .hoverable.teal { box-shadow: 0 2px 6px rgba(17,60,160,0.12) !important; }
+  /* Specific combinations used in our markup */
+  .group-header.teal, .group-header.teal.lighten-4, .root-drop-icon.teal { background-color: var(--primary-08) !important; color: #fff !important; }
+  /* Also cover Materialize 'green' utilities just in case */
+  .green, .green.lighten-1, .green.lighten-2, .green.lighten-3, .green.lighten-4,
+  .green.darken-1, .green.darken-2, .green.darken-3, .green.darken-4 { background-color: var(--primary) !important; color: #fff !important; }
+  .green-text { color: var(--primary) !important; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- Materialize JS + init -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        var elems = document.querySelectorAll('.modal');
+        if (window.M && elems.length) window.M.Modal.init(elems);
+      });
+    </script>
   </body>
 </html>

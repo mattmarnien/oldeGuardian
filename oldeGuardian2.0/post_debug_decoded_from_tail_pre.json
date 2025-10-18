@@ -1,0 +1,15 @@
+{
+  "connections": {
+    "491059674095943680": {
+      "channelId": "491059674095943684"
+    }
+  },
+  "nowPlaying": {
+    "491059674095943680": {
+      "track": "music\\01 General Music\\Dark Nights.mp3",
+      "position": 0,
+      "duration": 322,
+      "updated": "2025-10-18T02:35:50.217Z"
+    }
+  }
+}

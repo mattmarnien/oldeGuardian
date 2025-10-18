@@ -1,0 +1,15 @@
+﻿{
+  "connections": {
+    "491059674095943680": {
+      "channelId": "491059674095943684"
+    }
+  },
+  "nowPlaying": {
+    "491059674095943680": {
+      "track": "music\\09 SciFi\\Dark Zone.mp3",
+      "position": 0,
+      "duration": null,
+      "updated": "2025-10-18T03:06:59.285Z"
+    }
+  }
+}
