@@ -16,21 +16,29 @@ const PORT = process.env.BACKEND_PORT || 3001;
 const app = express();
 // parse JSON and urlencoded request bodies
 // capture raw request bodies for debugging (do not modify the body passed to downstream parsers)
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    try {
-      const s = buf && buf.toString(encoding || 'utf8');
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [raw-body] ${req.method} ${req.originalUrl || req.url} -> ${s}\n`); } catch (e) {}
-    } catch (e) {}
-  }
-}));
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// path to persisted state file
-const STATE_PATH = path.join(__dirname, 'state.json');
-
-// in-memory persisted state (will be populated by loadStateFromDisk)
+// in-memory persisted state only (no disk persistence)
 let persistedState = { connections: {}, nowPlaying: {} };
+
+// no-op save function: disk persistence was removed per user request
+function saveStateToDisk() {
+  // intentionally empty — persistence disabled
+}
+
+// Silence temporary backend.log debug appends by making appendFileSync a no-op for backend.log
+try {
+  const backendLogPath = path.join(__dirname, '..', '..', 'backend.log');
+  const _origAppend = fs.appendFileSync.bind(fs);
+  // Gate writes to backend.log unless BACKEND_DEBUG=1
+  fs.appendFileSync = function (file, data, options) {
+    try {
+      if (String(file) === backendLogPath && String(process.env.BACKEND_DEBUG || '') !== '1') return; // skip debug writes unless enabled
+    } catch (e) {}
+    return _origAppend(file, data, options);
+  };
+} catch (e) {}
 
 // common runtime maps/sets used by the server
 const players = new Map();
@@ -58,58 +66,8 @@ function broadcastSse(guildId, data) {
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 
 
-function loadStateFromDisk() {
-  try {
-    if (fs.existsSync(STATE_PATH)) {
-      const raw = fs.readFileSync(STATE_PATH, 'utf8');
-      const obj = JSON.parse(raw || '{}');
-      if (obj && typeof obj === 'object') {
-        persistedState = Object.assign({ connections: {}, nowPlaying: {} }, obj);
-      }
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] loaded from disk ${STATE_PATH}\n`); } catch(e){}
-    }
-  } catch (e) {
-    console.error('[state] load failed', e && e.message);
-  }
-  // mark that persistedState has been initialized (even if file did not exist)
-  try { stateLoaded = true; } catch(e) {}
-}
-
-function saveStateToDisk() {
-  try {
-    // avoid writing out a default/empty state before the initial load completes
-    if (!stateLoaded) {
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] save skipped until initial load completed\n`); } catch(e){}
-      return;
-    }
-    const tmp = STATE_PATH + '.tmp';
-    const body = JSON.stringify(persistedState, null, 2);
-    fs.writeFileSync(tmp, body, 'utf8');
-    fs.renameSync(tmp, STATE_PATH);
-    // write a human-readable debug copy for diagnostics to a fixed path
-    try {
-      const dbgPath = path.join(__dirname, 'state.debug.json');
-      fs.writeFileSync(dbgPath, body, 'utf8');
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] debug written to ${dbgPath}\n`); } catch (e) {}
-    } catch (e) {
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] debug write failed ${e && (e.stack || e.message)}\n`); } catch (ee) {}
-    }
-    // always append a compact base64-encoded copy of the JSON to backend logs so logs contain exact payload
-    try {
-      const b64 = Buffer.from(body || '', 'utf8').toString('base64');
-      const globalLogPath = path.join(__dirname, '..', '..', 'backend.log');
-      const localLogPath = path.join(__dirname, 'backend.log');
-      try { require('fs').appendFileSync(globalLogPath, `[${new Date().toISOString()}] [state] debug-json base64:${b64}\n`); } catch (e) {}
-      try { require('fs').appendFileSync(localLogPath, `[${new Date().toISOString()}] [state] debug-json base64:${b64}\n`); } catch (e) {}
-    } catch (e) {}
-    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] saved to disk ${STATE_PATH}\n`); } catch(e){}
-  } catch (e) {
-    console.error('[state] save failed', e && e.message);
-  }
-}
-
-// Load persisted state at startup
-loadStateFromDisk();
+// No disk persistence: persistedState starts empty in memory
+stateLoaded = true;
 
 // Attempt to get duration (seconds) for a media file by running ffmpeg probe and parsing stderr
 function getDurationSeconds(filePath) {
@@ -223,16 +181,7 @@ app.get('/api/events', (req, res) => {
 
 // Player control endpoint: actions = pause|resume|stop|toggleLoop
 app.post('/api/player', async (req, res) => {
-  // TEMP TELEMETRY: log headers + raw body for debugging malformed requests from browser/dev-proxy
-  try {
-    const headerSnapshot = JSON.stringify(req.headers || {});
-    let rawBody = null;
-    try { rawBody = JSON.stringify(req.body); } catch (e) { rawBody = String(req.body); }
-    require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [api/player] headers: ${headerSnapshot}\n`);
-    require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [api/player] body: ${rawBody}\n`);
-  } catch (e) {
-    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [api/player] telemetry error: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
-  }
+  // parsed JSON body is available as req.body
   const { guildId, action } = req.body || {};
   if (!guildId || !action) return res.status(400).json({ error: 'guildId and action are required' });
   let player = players.get(guildId);
@@ -516,24 +465,27 @@ app.get('/api/tracks', (req, res) => {
   }
 });
 
-// Expose persisted state for backup/inspection (read-only)
-app.get('/api/state', (req, res) => {
+// Serve media files (music or soundEffects) by relative path for client-side duration probing
+app.get('/api/media', (req, res) => {
   try {
-    // return the in-memory persistedState to avoid reading disk repeatedly
-    return res.json({ state: persistedState });
-  } catch (e) {
-    return res.status(500).json({ error: String(e && e.message) });
+    const rel = req.query.path || req.query.p || '';
+    if (!rel) return res.status(400).json({ error: 'path query required' });
+    // normalize backslashes
+    const relNormalized = rel.replace(/\\/g, '/').replace(/^\//, '');
+    // only allow paths under music/ or soundEffects/
+    const allowedRoots = [path.join(__dirname, 'music'), path.join(__dirname, 'soundEffects')];
+    const target = path.resolve(path.join(__dirname, relNormalized));
+    const isUnder = allowedRoots.some(r => target === r || target.startsWith(r + path.sep));
+    if (!isUnder) return res.status(403).json({ error: 'access denied' });
+    if (!fs.existsSync(target)) return res.status(404).json({ error: 'file not found' });
+    return res.sendFile(target);
+  } catch (err) {
+    console.error('[api/media] error', err && (err.stack || err.message));
+    return res.status(500).json({ error: String(err && err.message) });
   }
 });
 
-// Temporary diagnostics endpoint: returns last in-memory persistedState (fast and avoids disk timing issues)
-app.get('/api/last-saved', (req, res) => {
-  try {
-    return res.json({ state: persistedState });
-  } catch (e) {
-    return res.status(500).json({ error: String(e && e.message) });
-  }
-});
+// Persistence inspection endpoints removed — persistedState is in-memory only
 
 // Helper: resolve a short sfx name to a soundEffects relative path
 function findSfxByName(shortName) {
@@ -635,40 +587,9 @@ app.get('/api/diag', (req, res) => {
   }
 });
 
-// Debug dump endpoint: returns in-memory persistedState and recent backend.log tail
-app.get('/api/debug-dump', (req, res) => {
-  try {
-    const data = { state: persistedState, logTail: null };
-    const logPath = path.join(__dirname, '..', '..', 'backend.log');
-    if (fs.existsSync(logPath)) {
-      const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
-      data.logTail = lines.slice(-200);
-    }
-    res.json(data);
-  } catch (err) {
-    console.error('[debug-dump] error', err);
-    res.status(500).json({ error: String(err && err.message) });
-  }
-});
+// /api/debug-dump removed
 
-// Debug-inject endpoint: only enabled when BACKEND_ALLOW_TEST_INJECT=1
-app.post('/api/debug-inject', (req, res) => {
-  try {
-    if (String(process.env.BACKEND_ALLOW_TEST_INJECT || '') !== '1') return res.status(403).json({ error: 'debug-inject disabled' });
-    const { guildId, channelId, track } = req.body || {};
-    if (!guildId || !channelId) return res.status(400).json({ error: 'guildId and channelId are required' });
-    if (!persistedState.connections) persistedState.connections = {};
-    if (!persistedState.nowPlaying) persistedState.nowPlaying = {};
-    persistedState.connections[guildId] = { channelId };
-    persistedState.nowPlaying[guildId] = { track: track || 'test-tone', position: 0, duration: null, updated: new Date().toISOString() };
-    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [debug-inject] injected ${guildId} -> ${JSON.stringify(persistedState.nowPlaying[guildId])}\n`); } catch (e) {}
-    saveStateToDisk();
-    return res.json({ success: true });
-  } catch (err) {
-    console.error('[debug-inject] error', err);
-    return res.status(500).json({ error: String(err && err.message) });
-  }
-});
+// debug-inject removed
 
 // Move a file from one relative path to another (both must be under backend/music or backend/soundEffects)
 app.post('/api/move-file', (req, res) => {
@@ -1017,7 +938,7 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
     try { if (ffmpegProc) { ffmpegProc.on('exit', () => { try { if (progressInterval) clearInterval(progressInterval); } catch (e) {} }); } } catch (e) {}
   }
 
-  return { success: true, playing: track };
+  return { success: true, playing: track, duration: typeof durationSeconds === 'number' ? Math.floor(durationSeconds) : null };
 }
 
 // Test endpoint: play a generated sine tone for quick verification
@@ -1062,83 +983,88 @@ app.post('/api/test-tone', async (req, res) => {
 
 // TODO: Add endpoints for play, pause, skip, queue, etc.
 
-// Start server and Discord client only when run directly (not when imported by tests)
+// Start server and optionally Discord client only when run directly (not when imported by tests)
 if (require.main === module) {
   app.listen(PORT, () => console.log(`Backend API running on port ${PORT}`));
 
-  client.once('ready', () => {
-    console.log(`Discord bot logged in as ${client.user.tag}`);
-    // attempt to restore persisted connections and nowPlaying
-    (async () => {
-      try {
-        for (const [gid, rec] of Object.entries(persistedState.connections || {})) {
-          try {
-            const channelId = rec && rec.channelId;
-            if (!channelId) continue;
-            const guild = await client.guilds.fetch(gid).catch(() => null);
-            if (!guild) {
-              try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] guild ${gid} not available (skipping)\n`); } catch (e) {}
-              continue;
-            }
-            await guild.channels.fetch().catch(() => {});
-            const voiceChannel = guild.channels.cache.get(channelId) || guild.channels.cache.find(c => c.id === channelId);
-            if (!voiceChannel) {
-              try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] channel ${channelId} not found in guild ${gid} (skipping)\n`); } catch (e) {}
-              continue;
-            }
-            let joined = false;
+  const disableDiscord = String(process.env.DISABLE_DISCORD || '') === '1';
+  if (!disableDiscord) {
+    client.once('ready', () => {
+      console.log(`Discord bot logged in as ${client.user.tag}`);
+      // attempt to restore persisted connections and nowPlaying
+      (async () => {
+        try {
+          for (const [gid, rec] of Object.entries(persistedState.connections || {})) {
             try {
-              const connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
-              connections.set(gid, connection);
-              try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] rejoined guild ${gid} channel ${voiceChannel.id}\n`); } catch (e) {}
-              joined = true;
-            } catch (e) {
-              try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] initial join failed for ${gid}/${channelId}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
-            }
-            // attempt one retry after a short delay if initial join failed
-            if (!joined) {
+              const channelId = rec && rec.channelId;
+              if (!channelId) continue;
+              const guild = await client.guilds.fetch(gid).catch(() => null);
+              if (!guild) {
+                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] guild ${gid} not available (skipping)\n`); } catch (e) {}
+                continue;
+              }
+              await guild.channels.fetch().catch(() => {});
+              const voiceChannel = guild.channels.cache.get(channelId) || guild.channels.cache.find(c => c.id === channelId);
+              if (!voiceChannel) {
+                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] channel ${channelId} not found in guild ${gid} (skipping)\n`); } catch (e) {}
+                continue;
+              }
+              let joined = false;
               try {
-                await new Promise(r => setTimeout(r, 1200));
                 const connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
                 connections.set(gid, connection);
-                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] retry rejoined guild ${gid} channel ${voiceChannel.id}\n`); } catch (e) {}
+                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] rejoined guild ${gid} channel ${voiceChannel.id}\n`); } catch (e) {}
                 joined = true;
               } catch (e) {
-                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] retry failed for ${gid}/${channelId}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
+                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] initial join failed for ${gid}/${channelId}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
               }
-            }
-            // if there was a nowPlaying entry for this guild, try to resume it
-            const np = persistedState.nowPlaying && persistedState.nowPlaying[gid];
-            if (np && joined) {
-              try {
-                // small delay between resumes to avoid hammering the API
-                await new Promise(r => setTimeout(r, 800));
-                // np may be an object { track, position } or a legacy string
-                const trackPath = (typeof np === 'string') ? np : (np && np.track);
-                const startPos = (np && typeof np.position === 'number') ? np.position : ((np && np.position) ? Number(np.position) : 0);
-                if (trackPath && !trackPath.startsWith('soundEffects')) {
-                  try {
-                    await playTrack({ guildId: gid, channel: channelId, track: trackPath, startPosition: startPos });
-                    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] resumed ${trackPath} for ${gid} at ${startPos}s\n`); } catch (e) {}
-                  } catch (e) {
-                    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] failed to resume ${trackPath} for ${gid}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
-                  }
-                } else {
-                  // skip resuming SFX entries
+              // attempt one retry after a short delay if initial join failed
+              if (!joined) {
+                try {
+                  await new Promise(r => setTimeout(r, 1200));
+                  const connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+                  connections.set(gid, connection);
+                  try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] retry rejoined guild ${gid} channel ${voiceChannel.id}\n`); } catch (e) {}
+                  joined = true;
+                } catch (e) {
+                  try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] retry failed for ${gid}/${channelId}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
                 }
-              } catch (e) {
-                try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] failed to process nowPlaying for ${gid}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
               }
-            }
-          } catch (e) {}
+              // if there was a nowPlaying entry for this guild, try to resume it
+              const np = persistedState.nowPlaying && persistedState.nowPlaying[gid];
+              if (np && joined) {
+                try {
+                  // small delay between resumes to avoid hammering the API
+                  await new Promise(r => setTimeout(r, 800));
+                  // np may be an object { track, position } or a legacy string
+                  const trackPath = (typeof np === 'string') ? np : (np && np.track);
+                  const startPos = (np && typeof np.position === 'number') ? np.position : ((np && np.position) ? Number(np.position) : 0);
+                  if (trackPath && !trackPath.startsWith('soundEffects')) {
+                    try {
+                      await playTrack({ guildId: gid, channel: channelId, track: trackPath, startPosition: startPos });
+                      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] resumed ${trackPath} for ${gid} at ${startPos}s\n`); } catch (e) {}
+                    } catch (e) {
+                      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] failed to resume ${trackPath} for ${gid}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
+                    }
+                  } else {
+                    // skip resuming SFX entries
+                  }
+                } catch (e) {
+                  try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [restore] failed to process nowPlaying for ${gid}: ${e && (e.stack || e.message)}\n`); } catch (ee) {}
+                }
+              }
+            } catch (e) {}
+          }
+        } catch (e) {
+          console.error('[restore] error', e);
         }
-      } catch (e) {
-        console.error('[restore] error', e);
-      }
-    })();
-  });
+      })();
+    });
 
-  client.login(process.env.DISCORD_TOKEN);
+    client.login(process.env.DISCORD_TOKEN);
+  } else {
+    console.log('DISABLE_DISCORD=1 set; skipping Discord client login and restore logic');
+  }
 }
 
 module.exports = { scanGrouped, app, PORT };

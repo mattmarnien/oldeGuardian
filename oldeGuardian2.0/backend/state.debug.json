@@ -1,9 +1,5 @@
 {
-  "connections": {
-    "491059674095943680": {
-      "channelId": "491059674095943684"
-    }
-  },
+  "connections": {},
   "nowPlaying": {
     "491059674095943680": null
   }

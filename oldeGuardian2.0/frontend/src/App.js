@@ -81,6 +81,25 @@ function App() {
     if (guildId) refreshDiag();
   }, [guildId]);
 
+  // client-side duration probe: returns seconds or null
+  const probeDuration = (relPath) => new Promise((resolve) => {
+    if (!relPath) return resolve(null);
+    try {
+      const audio = document.createElement('audio');
+      audio.preload = 'metadata';
+      audio.src = `/api/media?path=${encodeURIComponent(relPath)}`;
+      const onLoaded = () => {
+        try { const d = isFinite(audio.duration) ? Math.floor(audio.duration) : null; audio.removeEventListener('loadedmetadata', onLoaded); audio.pause(); resolve(d); } catch (e) { resolve(null); }
+      };
+      audio.addEventListener('loadedmetadata', onLoaded);
+      audio.addEventListener('error', () => { try { audio.removeEventListener('loadedmetadata', onLoaded); } catch (e) {} resolve(null); });
+      // attempt to load
+      audio.load();
+      // timeout fallback
+      setTimeout(() => { try { audio.removeEventListener('loadedmetadata', onLoaded); } catch (e) {} resolve(null); }, 4000);
+    } catch (e) { resolve(null); }
+  });
+
   const fetchTracks = async () => {
     try {
       const res = await axios.get('/api/tracks');
@@ -197,6 +216,8 @@ function App() {
                 setNowPlaying(trackName);
                 try { setDuration(typeof np.duration === 'number' ? np.duration : (np && np.duration ? Number(np.duration) : null)); } catch (e) {}
                 try { setPosition(typeof np.position === 'number' ? np.position : (np && np.position ? Number(np.position) : null)); } catch (e) {}
+                    // probe duration client-side if backend didn't provide it and we have a track path
+                    try { if ((!np || typeof np.duration !== 'number') && np && np.track) { probeDuration(np.track).then(d => { if (d) setDuration(d); }); } } catch (e) {}
               }
             }
             if (data.type === 'state') {
@@ -211,6 +232,8 @@ function App() {
                 setNowPlaying(trackName);
                 try { setDuration(typeof np.duration === 'number' ? np.duration : (np && np.duration ? Number(np.duration) : null)); } catch (e) {}
                 try { setPosition(typeof np.position === 'number' ? np.position : (np && np.position ? Number(np.position) : null)); } catch (e) {}
+                  // if no duration provided, attempt client-side probe using the track path
+                  try { if ((!np || typeof np.duration !== 'number') && np && np.track) { probeDuration(np.track).then(d => { if (d) setDuration(d); }); } } catch (e) {}
               }
             }
             if (data.type === 'progress') {
@@ -233,14 +256,19 @@ function App() {
   const handlePlay = async (track) => {
     if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required to play.' });
     try {
-      await axios.post('/api/play', { guildId, channel, track: track.relPath });
+      const res = await axios.post('/api/play', { guildId, channel, track: track.relPath });
       setMessage({ success: `Playing ${track.name}` });
       setNowPlaying(track.name || track.relPath || 'Unknown');
       // mark player as playing so Pause becomes active immediately
       setIsPlayingRemote(true);
       // reset progress display when starting a new track
       setPosition(0);
-      setDuration(null);
+      // set duration if backend provided it
+      if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+      else {
+        // fallback: probe the track file for duration
+        try { probeDuration(track.relPath).then(d => { if (d) setDuration(d); }); } catch (e) {}
+      }
     } catch (err) {
       setMessage({ error: err.response?.data?.error || err.message });
     }
@@ -344,7 +372,12 @@ function App() {
         }}><i className="material-icons">pause</i></button>
   <button className="btn" disabled={!isConnected || isPlayingRemote} onClick={async () => {
           if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { await axios.post('/api/player', { guildId, action: 'resume' }); setIsPlayingRemote(true); setMessage({ success: 'Resumed' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+          try {
+            const res = await axios.post('/api/player', { guildId, action: 'resume' });
+            setIsPlayingRemote(true);
+            setMessage({ success: 'Resumed' });
+            if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+          } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
         }}><i className="material-icons">play_arrow</i></button>
   <button className={`btn ${isLooping ? 'teal loop-on' : ''}`} disabled={!isConnected} onClick={async () => {
           if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
