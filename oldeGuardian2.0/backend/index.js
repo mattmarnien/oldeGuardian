@@ -444,9 +444,8 @@ function scanGrouped(dirPath) {
     } else if (ent.isDirectory()) {
       const groupName = ent.name;
       const files = fs.readdirSync(entPath).filter(f => /\.(mp3|m4a|ogg|opus|wav)$/.test(f));
-      if (files.length > 0) {
-        groups[groupName] = files.map(f => ({ name: f, relPath: path.join(path.basename(dirPath), groupName, f) }));
-      }
+      // include the group even if it's empty (allows showing empty folders)
+      groups[groupName] = files.map(f => ({ name: f, relPath: path.join(path.basename(dirPath), groupName, f) }));
     }
   });
   // remove root if empty
@@ -680,6 +679,51 @@ app.post('/api/create-folder', (req, res) => {
   } catch (err) {
     console.error('[create-folder] error', err);
     try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [create-folder] error ${err.stack || err}\n`); } catch (e) {}
+    return res.status(500).json({ error: String(err && err.message) });
+  }
+});
+
+app.post('/api/delete-folder', (req, res) => {
+  try {
+    const { type, folderName } = req.body || {};
+    console.log('[delete-folder] received request:', { type, folderName });
+    if (!type || !folderName) return res.status(400).json({ error: 'type and folderName are required' });
+    const t = (type === 'sfx' || type === 'soundEffects') ? 'soundEffects' : 'music';
+    const base = path.join(__dirname, t);
+    const target = path.join(base, folderName);
+    const resolved = path.resolve(target);
+    const baseResolved = path.resolve(base);
+    console.log('[delete-folder] paths:', { base, target, resolved, baseResolved });
+    // ensure target is under base and not the base itself
+    if (!(resolved.startsWith(baseResolved + path.sep))) {
+      console.log('[delete-folder] invalid path check failed');
+      return res.status(400).json({ error: 'invalid folder path' });
+    }
+    if (!fs.existsSync(target)) {
+      console.log('[delete-folder] folder not found:', target);
+      return res.status(404).json({ error: 'Folder not found' });
+    }
+    // check if it's a directory
+    const stats = fs.statSync(target);
+    if (!stats.isDirectory()) {
+      console.log('[delete-folder] not a directory');
+      return res.status(400).json({ error: 'Not a folder' });
+    }
+    // count files inside
+    const files = fs.readdirSync(target).filter(f => {
+      const fp = path.join(target, f);
+      return fs.statSync(fp).isFile();
+    });
+    const fileCount = files.length;
+    console.log('[delete-folder] deleting:', target, 'with', fileCount, 'files');
+    // delete folder recursively
+    fs.rmSync(target, { recursive: true, force: true });
+    console.log('[delete-folder] deleted successfully');
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [delete-folder] deleted ${target} (${fileCount} files)\n`); } catch (e) {}
+    return res.json({ success: true, deletedFiles: fileCount });
+  } catch (err) {
+    console.error('[delete-folder] error', err);
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [delete-folder] error ${err.stack || err}\n`); } catch (e) {}
     return res.status(500).json({ error: String(err && err.message) });
   }
 });

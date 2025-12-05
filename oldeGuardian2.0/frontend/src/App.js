@@ -43,6 +43,14 @@ function App() {
     }
   }, [channels]);
 
+  // initialize Materialize Modal when M is available
+  useEffect(() => {
+    if (window.M) {
+      const modalElem = document.getElementById('createFolderModal');
+      if (modalElem) window.M.Modal.init(modalElem);
+    }
+  }, []);
+
   // when channel (and guildId) changes, fetch current volumes
   useEffect(() => {
     const fetchVolumes = async () => {
@@ -620,6 +628,28 @@ function App() {
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ flex: 1 }}>{group}</span>
+                    <button
+                      className="btn-small teal"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const fileCount = tracks.music[group].length;
+                        const message = fileCount > 0
+                          ? `Delete folder "${group}" and ${fileCount} file(s) inside?`
+                          : `Delete empty folder "${group}"?`;
+                        if (!window.confirm(message)) return;
+                        try {
+                          await axios.post('/api/delete-folder', { type: 'music', folderName: group });
+                          setMessage({ success: `Deleted folder ${group}` });
+                          await fetchTracks();
+                        } catch (e) {
+                          setMessage({ error: e.response?.data?.error || e.message });
+                        }
+                      }}
+                      style={{ padding: '0 8px', height: 24, lineHeight: '24px', fontSize: 11 }}
+                      title="Delete folder"
+                    >
+                      <i className="material-icons" style={{ fontSize: 16, color: 'white' }}>delete</i>
+                    </button>
                     <i className="material-icons" aria-hidden>{collapsed[`music:${group}`] ? 'chevron_right' : 'expand_more'}</i>
                   </span>
                 </h3>
@@ -632,6 +662,9 @@ function App() {
                   const target = `music\\${group}\\${filename}`;
                   attemptMove(rel, target);
                 }}>
+                  {tracks.music[group].length === 0 && (
+                    <li style={{ marginTop: 6, fontSize: 13, color: '#999', fontStyle: 'italic' }}>Empty folder</li>
+                  )}
                   {tracks.music[group].map(item => (
                     <li key={item.relPath} className="list-item" style={{ marginTop: 6, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }} draggable onDragStart={(e) => { e.dataTransfer.setData('text/plain', item.relPath); e.dataTransfer.setData('source', 'music'); }} onClick={() => handlePlay(item)}>
                       <span style={{ flex: 1 }}>{item.name}</span>
@@ -717,6 +750,28 @@ function App() {
               >
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ flex: 1 }}>{group}</span>
+                  <button
+                    className="btn-small teal"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const fileCount = tracks.soundEffects[group].length;
+                      const message = fileCount > 0
+                        ? `Delete folder "${group}" and ${fileCount} file(s) inside?`
+                        : `Delete empty folder "${group}"?`;
+                      if (!window.confirm(message)) return;
+                      try {
+                        await axios.post('/api/delete-folder', { type: 'sfx', folderName: group });
+                        setMessage({ success: `Deleted folder ${group}` });
+                        await fetchTracks();
+                      } catch (e) {
+                        setMessage({ error: e.response?.data?.error || e.message });
+                      }
+                    }}
+                    style={{ padding: '0 8px', height: 24, lineHeight: '24px', fontSize: 11 }}
+                    title="Delete folder"
+                  >
+                    <i className="material-icons" style={{ fontSize: 16, color: 'white' }}>delete</i>
+                  </button>
                   <i className="material-icons" aria-hidden>{collapsed[`sfx:${group}`] ? 'chevron_right' : 'expand_more'}</i>
                 </span>
               </h3>
@@ -729,6 +784,9 @@ function App() {
                   const target = `soundEffects\\${group}\\${filename}`;
                   attemptMove(rel, target);
                 }}>
+                  {tracks.soundEffects[group].length === 0 && (
+                    <li style={{ marginTop: 6, fontSize: 13, color: '#999', fontStyle: 'italic' }}>Empty folder</li>
+                  )}
                   {tracks.soundEffects[group].map(item => (
                     <li key={item.relPath} className="list-item" style={{ marginTop: 6, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }} draggable onDragStart={(e) => { e.dataTransfer.setData('text/plain', item.relPath); e.dataTransfer.setData('source', 'sfx'); }} onClick={() => handleSfx(item)}>
                       <span style={{ flex: 1 }}>{item.name}</span>
@@ -764,10 +822,11 @@ function App() {
               if (!createFolderName) return setMessage({ error: 'Folder name required' });
               await axios.post('/api/create-folder', { type: createFolderType, folderName: createFolderName });
               setMessage({ success: `Created folder ${createFolderName}` });
-              // ensure collapse state includes the new group and open it
+              // fetch tracks first to update the UI
+              await fetchTracks();
+              // then expand the new folder group
               const key = `${createFolderType === 'music' ? 'music' : 'sfx'}:${createFolderName}`;
               setCollapsed(prev => ({ ...prev, [key]: false }));
-              fetchTracks();
               const modal = window.M.Modal.getInstance(document.getElementById('createFolderModal'));
               modal.close();
             } catch (e) {
