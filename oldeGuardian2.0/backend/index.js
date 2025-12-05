@@ -8,6 +8,7 @@ const path = require('path');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
+
 // guard: true once we've finished loading persistedState from disk
 let stateLoaded = false;
 
@@ -46,6 +47,8 @@ const connections = new Map();
 const ffmpegProcs = new Map();
 const sseClients = []; // { id, res, guildId }
 const loopFlags = new Map();
+const sfxQueues = new Map(); // guildId -> array of { sfxPath, volume }
+const sfxProcs = new Map(); // guildId -> Set of ffmpeg processes for active SFX
 
 // simple SSE broadcast helper
 function broadcastSse(guildId, data) {
@@ -561,6 +564,29 @@ app.post('/api/volume', (req, res) => {
   return res.json(resp);
 });
 
+// Real-time volume update endpoint: updates the currently playing track's volume
+app.post('/api/update-volume', (req, res) => {
+  const { guildId } = req.body;
+  if (!guildId) return res.status(400).json({ error: 'guildId required' });
+  try {
+    const player = getPlayerForGuild(guildId);
+    if (!player || !player.state) return res.status(404).json({ error: 'Player not found for guild' });
+    
+    // Get the current resource and update its volume
+    const resource = player.state.resource;
+    if (resource && resource.volume) {
+      const vol = musicVolumes.has(guildId) ? Number(musicVolumes.get(guildId)) : 1;
+      if (typeof resource.volume.setVolume === 'function') {
+        resource.volume.setVolume(isFinite(vol) ? vol : 1);
+        return res.json({ success: true, guildId, newVolume: vol });
+      }
+    }
+    return res.json({ success: false, guildId, message: 'No active resource to update' });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.message) });
+  }
+});
+
 // Diagnostics endpoint: returns per-guild connection/player states and recent backend.log tail
 app.get('/api/diag', (req, res) => {
   try {
@@ -737,15 +763,21 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
     const args = [
       '-hide_banner',
       '-re',
-      '-loglevel', 'warning',
-      '-i', musicPath,
+      '-loglevel', 'warning'
+    ];
+    // For SFX, limit input to 2 seconds to prevent long audio files from playing completely
+    if (isSfx) {
+      args.push('-t', '2');
+    }
+    args.push('-i', musicPath);
+    args.push(
       '-vn',
       '-acodec', 'pcm_s16le',
       '-ar', '48000',
       '-ac', '2',
       '-f', 's16le',
       '-'
-    ];
+    );
     // try to add -progress pipe:3 to get periodic key=value output if ffmpeg supports it
     try { args.push('-progress', 'pipe:3'); } catch (e) {}
     // if startPosition provided and > 0, add -ss before -i for input seek
@@ -813,10 +845,17 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
   }
 
     if (isSfx) {
+    // For SFX, we need to temporarily switch to an SFX player
+    // Save the current music subscription so we can restore it after SFX
+    const currentMusicSub = connection && connection.state ? connection.state.subscription : null;
+    
     const sfxPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
     try { sfxPlayer.on('stateChange', (oldState, newState) => { try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [sfx:${guildId}] state ${oldState.status} -> ${newState.status}\n`); } catch (e) {} }); } catch (e) {}
+
+    // Subscribe SFX player to connection (this temporarily pauses music)
+    let sfxSub = null;
     try {
-      const sfxSub = connection.subscribe(sfxPlayer);
+      sfxSub = connection.subscribe(sfxPlayer);
       try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] sfx subscription created: ${String(!!sfxSub)}\n`); } catch (e) {}
     } catch (e) { console.error('[play] sfx subscribe failed', e); }
 
@@ -842,10 +881,21 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
       throw e;
     }
 
+    // When SFX finishes, clean up and restore the music player subscription
     sfxPlayer.once(AudioPlayerStatus.Idle, () => {
       try { ffmpegProc.kill(); } catch (e) {}
       try { sfxPlayer.stop(); } catch (e) {}
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [sfx:${guildId}] finished and cleaned up\n`); } catch (e) {}
+      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [sfx:${guildId}] finished, restoring music player\n`); } catch (e) {}
+      // Re-subscribe the music player to continue playback
+      try {
+        const musicPlayer = getPlayerForGuild(guildId);
+        if (musicPlayer && connection) {
+          connection.subscribe(musicPlayer);
+          try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [sfx:${guildId}] music player re-subscribed\n`); } catch (e) {}
+        }
+      } catch (e) {
+        try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [sfx:${guildId}] failed to restore music player: ${e.message}\n`); } catch (e) {}
+      }
     });
   } else {
     // pipe ffmpeg stdout through a PassThrough to catch premature-close / pipeline errors
@@ -915,14 +965,18 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
     guildPlayer.once(AudioPlayerStatus.Idle, () => {
       try { ffmpegProc.kill(); } catch (e) {}
       cleanupProgress();
-      // clear nowPlaying when playback finished (unless loop restarts)
-    try {
-      persistedState.nowPlaying[guildId] = null;
-      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] nowPlaying-cleared ${guildId} (idle)
+      // Only clear nowPlaying if we are not paused; a paused stop should preserve state for resume.
+      try {
+        const entry = persistedState.nowPlaying && persistedState.nowPlaying[guildId];
+        const isPaused = entry && entry.paused;
+        if (!isPaused) {
+          persistedState.nowPlaying[guildId] = null;
+          try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [state] nowPlaying-cleared ${guildId} (idle)
 `); } catch (e) {}
-      saveStateToDisk();
-      try { broadcastSse(guildId, { type: 'nowPlaying', nowPlaying: null }); } catch (e) {}
-    } catch (e) {}
+          saveStateToDisk();
+          try { broadcastSse(guildId, { type: 'nowPlaying', nowPlaying: null }); } catch (e) {}
+        }
+      } catch (e) {}
       try {
         const shouldLoop = !!loopFlags.get(guildId);
         if (shouldLoop) {

@@ -186,6 +186,7 @@ function App() {
   const [seeking, setSeeking] = useState(false);
   const [statusPolling, setStatusPolling] = useState(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [lastPositionUpdate, setLastPositionUpdate] = useState({ position: 0, timestamp: Date.now() });
   // derived connected state: true if we think we're joined locally or diag reports a connection for this guild
   const isConnected = joined || (guildId && connectedGuilds.has(guildId));
   const handleJoin = async () => {
@@ -237,7 +238,13 @@ function App() {
               }
             }
             if (data.type === 'progress') {
-              try { if (!seeking) setPosition(typeof data.position === 'number' ? data.position : null); } catch (e) {}
+              try {
+                if (!seeking) {
+                  const pos = typeof data.position === 'number' ? data.position : null;
+                  setPosition(pos);
+                  if (pos !== null) setLastPositionUpdate({ position: pos, timestamp: Date.now() });
+                }
+              } catch (e) {}
               try { setDuration(typeof data.duration === 'number' ? data.duration : null); } catch (e) {}
             }
             if (data.type === 'loop') {
@@ -263,6 +270,7 @@ function App() {
       setIsPlayingRemote(true);
       // reset progress display when starting a new track
       setPosition(0);
+      setLastPositionUpdate({ position: 0, timestamp: Date.now() });
       // set duration if backend provided it
       if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
       else {
@@ -280,6 +288,25 @@ function App() {
       try { if (statusPolling) clearInterval(statusPolling); } catch (e) {}
     };
   }, [statusPolling]);
+
+  // Interpolate position during playback for smooth slider movement
+  useEffect(() => {
+    if (!isPlayingRemote || seeking) return;
+    const interval = setInterval(() => {
+      try {
+        if (lastPositionUpdate && typeof lastPositionUpdate.position === 'number') {
+          const elapsed = (Date.now() - lastPositionUpdate.timestamp) / 1000;
+          const estimatedPosition = lastPositionUpdate.position + elapsed;
+          if (duration && estimatedPosition <= duration) {
+            setPosition(Math.round(estimatedPosition * 10) / 10);
+          } else if (duration && estimatedPosition > duration) {
+            setPosition(duration);
+          }
+        }
+      } catch (e) {}
+    }, 100);
+    return () => clearInterval(interval);
+  }, [isPlayingRemote, seeking, lastPositionUpdate, duration]);
 
   // Poll /api/diag when log viewer is open
   useEffect(() => {
@@ -366,6 +393,10 @@ function App() {
             </div>
           </div>
         <div className="player-controls" role="group" aria-label="Player controls">
+          <button className="btn" disabled={!isConnected || !nowPlaying} onClick={async () => {
+          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+          try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+        }}><i className="material-icons">stop</i></button>
           <button className="btn" disabled={!isConnected || !isPlayingRemote} onClick={async () => {
           if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
           try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
@@ -377,6 +408,10 @@ function App() {
             setIsPlayingRemote(true);
             setMessage({ success: 'Resumed' });
             if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+            if (res && res.data && typeof res.data.position === 'number') {
+              setPosition(res.data.position);
+              setLastPositionUpdate({ position: res.data.position, timestamp: Date.now() });
+            }
           } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
         }}><i className="material-icons">play_arrow</i></button>
   <button className={`btn ${isLooping ? 'teal loop-on' : ''}`} disabled={!isConnected} onClick={async () => {
@@ -407,6 +442,7 @@ function App() {
               onClick={async () => {
                 if (!guildId) return setMessage({ error: 'guildId required to leave' });
                 try {
+                  await axios.post('/api/player', { guildId, action: 'stop' });
                   await axios.post('/api/leave', { guildId });
                   try { if (eventSource) { eventSource.close(); setEventSource(null); } } catch (e) {}
                   setJoined(false);
@@ -505,22 +541,35 @@ function App() {
       <div style={{ display: 'flex', gap: 24 }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>Music</h2>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+              <i className="material-icons" style={{ fontSize: 28 }}>music_note</i>
+              Music
+            </h2>
           </div>
-            <span
-              role="button"
-              aria-label="Drop to music root"
-              title="Drop here to move to music root"
-              className={`root-drop-icon ${dragOverTarget === 'music:root' ? 'teal' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverTarget('music:root'); }}
-              onDragLeave={() => setDragOverTarget(null)}
-              onDrop={(e) => {
-                e.preventDefault(); setDragOverTarget(null);
-                const rel = e.dataTransfer.getData('text/plain'); if (!rel) return; const filename = rel.split('\\').pop(); const target = `music\\${filename}`; attemptMove(rel, target);
-              }}
-            >
-              <i className="material-icons">folder_open</i>
-            </span>
+          <div
+            role="button"
+            aria-label="Drop to music root"
+            title="Drop files/folders here to move to music root"
+            style={{
+              padding: 24,
+              marginBottom: 12,
+              backgroundColor: dragOverTarget === 'music:root' ? '#c8e6c9' : '#f5f5f5',
+              border: '2px dashed ' + (dragOverTarget === 'music:root' ? '#4caf50' : '#ccc'),
+              borderRadius: 8,
+              textAlign: 'center',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverTarget('music:root'); }}
+            onDragLeave={() => setDragOverTarget(null)}
+            onDrop={(e) => {
+              e.preventDefault(); setDragOverTarget(null);
+              const rel = e.dataTransfer.getData('text/plain'); if (!rel) return; const filename = rel.split('\\').pop(); const target = `music\\${filename}`; attemptMove(rel, target);
+            }}
+          >
+            <i className="material-icons" style={{ fontSize: 32, color: '#999', display: 'block', marginBottom: 8 }}>upload_file</i>
+            <div style={{ color: '#666', fontSize: 13 }}>Drop files/folders here</div>
+          </div>
           <div style={{ marginBottom: 8 }}>
             <button className="btn" onClick={() => {
               const modal = window.M.Modal.getInstance(document.getElementById('createFolderModal'));
@@ -528,14 +577,18 @@ function App() {
               setCreateFolderType('music');
               setCreateFolderName('');
               modal.open();
-            }}>Create Music Folder</button>
+            }}><i className="material-icons" style={{ fontSize: 20, marginRight: 4 }}>create_new_folder</i>Create Folder</button>
           </div>
           <div style={{ marginBottom: 8 }}>
         <label>Music volume: </label>
         <input type="range" min="0" max="2" step="0.05" value={musicVolume} onChange={async e => {
           const v = Number(e.target.value); setMusicVolume(v);
           if (guildId) {
-            try { await axios.post('/api/volume', { guildId, musicVolume: v }); } catch (e) { /* ignore */ }
+            try { 
+              await axios.post('/api/volume', { guildId, musicVolume: v }); 
+              // Also update the currently playing track's volume in real-time
+              await axios.post('/api/update-volume', { guildId });
+            } catch (e) { /* ignore */ }
           }
         }} style={{ width: 300 }} />
         <span style={{ marginLeft: 8 }}>{musicVolume.toFixed(2)}</span>
@@ -593,29 +646,41 @@ function App() {
         </div>
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>Sound Effects
-            <span
-              role="button"
-              aria-label="Drop to sfx root"
-              title="Drop here to move to soundEffects root"
-              className={`root-drop-icon ${dragOverTarget === 'sfx:root' ? 'teal' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverTarget('sfx:root'); }}
-              onDragLeave={() => setDragOverTarget(null)}
-              onDrop={(e) => {
-                e.preventDefault(); setDragOverTarget(null);
-                const rel = e.dataTransfer.getData('text/plain'); if (!rel) return; const parts = rel.split('\\'); const filename = parts[parts.length-1]; const target = `soundEffects\\${filename}`; attemptMove(rel, target);
-              }}
-            >
-              <i className="material-icons">volume_up</i>
-            </span>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+            <i className="material-icons" style={{ fontSize: 28 }}>graphic_eq</i>
+            SFX
           </h2>
+          <div
+            role="button"
+            aria-label="Drop to sfx root"
+            title="Drop files/folders here to move to soundEffects root"
+            style={{
+              padding: 24,
+              marginBottom: 12,
+              backgroundColor: dragOverTarget === 'sfx:root' ? '#c8e6c9' : '#f5f5f5',
+              border: '2px dashed ' + (dragOverTarget === 'sfx:root' ? '#4caf50' : '#ccc'),
+              borderRadius: 8,
+              textAlign: 'center',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverTarget('sfx:root'); }}
+            onDragLeave={() => setDragOverTarget(null)}
+            onDrop={(e) => {
+              e.preventDefault(); setDragOverTarget(null);
+              const rel = e.dataTransfer.getData('text/plain'); if (!rel) return; const parts = rel.split('\\'); const filename = parts[parts.length-1]; const target = `soundEffects\\${filename}`; attemptMove(rel, target);
+            }}
+          >
+            <i className="material-icons" style={{ fontSize: 32, color: '#999', display: 'block', marginBottom: 8 }}>upload_file</i>
+            <div style={{ color: '#666', fontSize: 13 }}>Drop files/folders here</div>
+          </div>
           <div style={{ marginBottom: 8 }}>
             <button className="btn" onClick={() => {
               const modal = window.M.Modal.getInstance(document.getElementById('createFolderModal'));
               setCreateFolderType('sfx');
               setCreateFolderName('');
               modal.open();
-            }}>Create SFX Folder</button>
+            }}><i className="material-icons" style={{ fontSize: 20, marginRight: 4 }}>create_new_folder</i>Create Folder</button>
           </div>
           <div style={{ marginBottom: 8 }}>
         <label>SFX volume: </label>
@@ -768,6 +833,7 @@ function App() {
                 onClick={async () => {
                   if (!guildId) return setMessage({ error: 'guildId required to leave' });
                   try {
+                    await axios.post('/api/player', { guildId, action: 'stop' });
                     await axios.post('/api/leave', { guildId });
                     try { if (eventSource) { eventSource.close(); setEventSource(null); } } catch (e) {}
                     setJoined(false);
