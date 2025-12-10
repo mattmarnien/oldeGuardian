@@ -586,6 +586,59 @@ app.post('/api/update-volume', (req, res) => {
   }
 });
 
+// Get available audio output devices
+app.get('/api/audio-devices', (req, res) => {
+  try {
+    const platform = process.platform;
+    
+    if (platform === 'win32') {
+      // On Windows, try to get actual audio devices
+      const { execSync } = require('child_process');
+      try {
+        // Use PowerShell to get Windows audio devices
+        // Get audio render/playback devices (speakers/headphones) - exclude microphones
+        const psCommand = `Get-PnpDevice -Class AudioEndpoint | Select-Object Name, ConfigManagerErrorCode | Where-Object {($_.ConfigManagerErrorCode -eq 'CM_PROB_NONE' -or $_.ConfigManagerErrorCode -eq 0) -and ($_.Name -like '*Speakers*' -or $_.Name -like '*Headphones*' -or $_.Name -like '*CABLE Output*')} | ConvertTo-Json`;
+        const result = execSync(`powershell -Command "${psCommand}"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 });
+        console.log('[audio-devices] PowerShell result:', result);
+        
+        let devices = [];
+        try {
+          if (result && result.trim()) {
+            const parsed = JSON.parse(result);
+            if (Array.isArray(parsed)) {
+              devices = parsed.map((d, idx) => ({ name: d.Name || `Device ${idx + 1}`, id: `device_${idx}` }));
+            } else if (parsed && parsed.Name) {
+              devices = [{ name: parsed.Name, id: 'device_0' }];
+            }
+          }
+        } catch (parseErr) {
+          console.error('[audio-devices] Failed to parse PowerShell result:', parseErr);
+        }
+        
+        // Always include default option if we found devices
+        if (devices.length > 0) {
+          const result_devices = [
+            { name: 'Default Device', id: 'default' },
+            ...devices
+          ];
+          console.log('[audio-devices] returning devices:', result_devices);
+          return res.json({ devices: result_devices });
+        }
+      } catch (psErr) {
+        console.log('[audio-devices] PowerShell query failed, using fallback:', psErr.message);
+      }
+    }
+    
+    // Fallback: return empty array (UI will show "No devices found")
+    console.log('[audio-devices] returning empty array');
+    res.json({ devices: [] });
+  } catch (e) {
+    console.error('[audio-devices] error', e);
+    // Always return valid response, never 500
+    res.json({ devices: [] });
+  }
+});
+
 // Diagnostics endpoint: returns per-guild connection/player states and recent backend.log tail
 app.get('/api/diag', (req, res) => {
   try {

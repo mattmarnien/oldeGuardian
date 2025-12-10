@@ -30,18 +30,39 @@ function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [logLines, setLogLines] = useState([]);
   const [logPolling, setLogPolling] = useState(false);
+  const [useLocalAudio, setUseLocalAudio] = useState(false);
+  const [audioDevices, setAudioDevices] = useState([]);
+  const [selectedAudioDevice, setSelectedAudioDevice] = useState('default');
 
   useEffect(() => {
     fetchTracks();
   }, []);
 
   // initialize Materialize FormSelect when M is available and channels change
+  // Exclude audio device select to avoid DOM manipulation conflicts
   useEffect(() => {
     if (window.M) {
-      const elems = document.querySelectorAll('select');
+      // Destroy any Materialize instance on audio device select if it exists
+      const audioSelect = document.getElementById('audioDeviceSelect');
+      if (audioSelect) {
+        const instance = window.M.FormSelect.getInstance(audioSelect);
+        if (instance) {
+          try {
+            instance.destroy();
+          } catch (e) {
+            console.warn('Failed to destroy Materialize instance on audio select:', e);
+          }
+        }
+      }
+      
+      // Initialize only non-audio device selects
+      const elems = document.querySelectorAll('select:not(#audioDeviceSelect)');
       if (elems && elems.length) window.M.FormSelect.init(elems);
     }
-  }, [channels]);
+  }, [channels, useLocalAudio]);
+
+  // Note: We don't initialize Materialize FormSelect for the audio device dropdown
+  // to avoid DOM manipulation conflicts with React when toggling visibility
 
   // initialize Materialize Modal when M is available
   useEffect(() => {
@@ -50,6 +71,59 @@ function App() {
       if (modalElem) window.M.Modal.init(modalElem);
     }
   }, []);
+
+  // fetch available audio devices for local playback
+  useEffect(() => {
+    const fetchAudioDevices = async () => {
+      try {
+        console.log('Fetching audio devices...');
+        const res = await axios.get('/api/audio-devices');
+        console.log('Audio devices response:', res.data);
+        if (res.data && res.data.devices) {
+          console.log('Setting audio devices:', res.data.devices);
+          setAudioDevices(res.data.devices);
+          if (res.data.devices.length > 0) {
+            setSelectedAudioDevice(res.data.devices[0].id);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch audio devices:', e);
+        // Set empty array - UI will show "No devices found"
+        setAudioDevices([]);
+      }
+    };
+    fetchAudioDevices();
+  }, []);
+
+  // Log useLocalAudio whenever it changes and cleanup on toggle
+  useEffect(() => {
+    console.log('useLocalAudio state updated:', useLocalAudio);
+    console.log('audioDevices state:', audioDevices);
+    
+    if (useLocalAudio) {
+      // When toggling local audio ON, stop any Discord playback
+      if (guildId && isPlayingRemote) {
+        axios.post('/api/player', { guildId, action: 'stop' })
+          .then(() => {
+            setIsPlayingRemote(false);
+            setNowPlaying('');
+            setPosition(null);
+            setDuration(null);
+          })
+          .catch(e => console.error('Failed to stop Discord playback:', e));
+      }
+    } else {
+      // When toggling local audio OFF, cleanup local audio
+      if (window.currentLocalAudio) {
+        window.currentLocalAudio.pause();
+        window.currentLocalAudio = null;
+        setIsPlayingRemote(false);
+        setNowPlaying('');
+        setPosition(null);
+        setDuration(null);
+      }
+    }
+  }, [useLocalAudio]);
 
   // when channel (and guildId) changes, fetch current volumes
   useEffect(() => {
@@ -269,24 +343,72 @@ function App() {
   };
 
   const handlePlay = async (track) => {
-    if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required to play.' });
-    try {
-      const res = await axios.post('/api/play', { guildId, channel, track: track.relPath });
-      setMessage({ success: `Playing ${track.name}` });
-      setNowPlaying(track.name || track.relPath || 'Unknown');
-      // mark player as playing so Pause becomes active immediately
-      setIsPlayingRemote(true);
-      // reset progress display when starting a new track
-      setPosition(0);
-      setLastPositionUpdate({ position: 0, timestamp: Date.now() });
-      // set duration if backend provided it
-      if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
-      else {
-        // fallback: probe the track file for duration
-        try { probeDuration(track.relPath).then(d => { if (d) setDuration(d); }); } catch (e) {}
+    // Allow local audio playback without Discord connection
+    if (!useLocalAudio && (!guildId || !channel)) {
+      return setMessage({ error: 'Guild ID and channel required to play.' });
+    }
+    
+    if (useLocalAudio) {
+      // Local audio playback - use browser's Audio API
+      try {
+        // Stop any currently playing local audio
+        if (window.currentLocalAudio) {
+          window.currentLocalAudio.pause();
+          window.currentLocalAudio = null;
+        }
+        
+        const audio = new Audio(`/api/media?path=${encodeURIComponent(track.relPath)}`);
+        audio.volume = musicVolume;
+        
+        // Set up event listeners
+        audio.addEventListener('loadedmetadata', () => {
+          setDuration(Math.floor(audio.duration));
+        });
+        
+        audio.addEventListener('timeupdate', () => {
+          setPosition(Math.floor(audio.currentTime));
+        });
+        
+        audio.addEventListener('ended', () => {
+          setIsPlayingRemote(false);
+          setPosition(0);
+          if (isLooping) {
+            audio.currentTime = 0;
+            audio.play();
+          }
+        });
+        
+        await audio.play();
+        window.currentLocalAudio = audio;
+        
+        setMessage({ success: `Playing ${track.name} locally` });
+        setNowPlaying(track.name || track.relPath || 'Unknown');
+        setIsPlayingRemote(true);
+        setPosition(0);
+        setLastPositionUpdate({ position: 0, timestamp: Date.now() });
+      } catch (err) {
+        setMessage({ error: `Local playback failed: ${err.message}` });
       }
-    } catch (err) {
-      setMessage({ error: err.response?.data?.error || err.message });
+    } else {
+      // Discord playback
+      try {
+        const res = await axios.post('/api/play', { guildId, channel, track: track.relPath });
+        setMessage({ success: `Playing ${track.name}` });
+        setNowPlaying(track.name || track.relPath || 'Unknown');
+        // mark player as playing so Pause becomes active immediately
+        setIsPlayingRemote(true);
+        // reset progress display when starting a new track
+        setPosition(0);
+        setLastPositionUpdate({ position: 0, timestamp: Date.now() });
+        // set duration if backend provided it
+        if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+        else {
+          // fallback: probe the track file for duration
+          try { probeDuration(track.relPath).then(d => { if (d) setDuration(d); }); } catch (e) {}
+        }
+      } catch (err) {
+        setMessage({ error: err.response?.data?.error || err.message });
+      }
     }
   };
 
@@ -401,30 +523,71 @@ function App() {
             </div>
           </div>
         <div className="player-controls" role="group" aria-label="Player controls">
-          <button className="btn" disabled={!isConnected || !nowPlaying} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
-        }}><i className="material-icons">stop</i></button>
-          <button className="btn" disabled={!isConnected || !isPlayingRemote} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
-        }}><i className="material-icons">pause</i></button>
-  <button className="btn" disabled={!isConnected || isPlayingRemote} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try {
-            const res = await axios.post('/api/player', { guildId, action: 'resume' });
-            setIsPlayingRemote(true);
-            setMessage({ success: 'Resumed' });
-            if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
-            if (res && res.data && typeof res.data.position === 'number') {
-              setPosition(res.data.position);
-              setLastPositionUpdate({ position: res.data.position, timestamp: Date.now() });
+          <button className="btn" disabled={!nowPlaying} onClick={async () => {
+          if (useLocalAudio) {
+            // Stop local audio
+            if (window.currentLocalAudio) {
+              window.currentLocalAudio.pause();
+              window.currentLocalAudio.currentTime = 0;
+              window.currentLocalAudio = null;
             }
-          } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+            setIsPlayingRemote(false);
+            setNowPlaying('');
+            setPosition(null);
+            setDuration(null);
+            setMessage({ success: 'Stopped' });
+          } else {
+            if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+            try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+          }
+        }}><i className="material-icons">stop</i></button>
+          <button className="btn" disabled={!isPlayingRemote} onClick={async () => {
+          if (useLocalAudio) {
+            // Pause local audio
+            if (window.currentLocalAudio) {
+              window.currentLocalAudio.pause();
+              setIsPlayingRemote(false);
+              setMessage({ success: 'Paused' });
+            }
+          } else {
+            if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+            try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+          }
+        }}><i className="material-icons">pause</i></button>
+  <button className="btn" disabled={isPlayingRemote || !nowPlaying} onClick={async () => {
+          if (useLocalAudio) {
+            // Resume local audio
+            if (window.currentLocalAudio) {
+              window.currentLocalAudio.play();
+              setIsPlayingRemote(true);
+              setMessage({ success: 'Resumed' });
+            }
+          } else {
+            if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+            try {
+              const res = await axios.post('/api/player', { guildId, action: 'resume' });
+              setIsPlayingRemote(true);
+              setMessage({ success: 'Resumed' });
+              if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+              if (res && res.data && typeof res.data.position === 'number') {
+                setPosition(res.data.position);
+                setLastPositionUpdate({ position: res.data.position, timestamp: Date.now() });
+              }
+            } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+          }
         }}><i className="material-icons">play_arrow</i></button>
-  <button className={`btn ${isLooping ? 'teal loop-on' : ''}`} disabled={!isConnected} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { const res = await axios.post('/api/player', { guildId, action: 'toggleLoop' }); setIsLooping(!!res.data.loop); setMessage({ success: `Loop ${res.data.loop ? 'enabled' : 'disabled'}` }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+  <button className={`btn ${isLooping ? 'teal loop-on' : ''}`} disabled={!nowPlaying} onClick={async () => {
+          if (useLocalAudio) {
+            // Toggle loop for local audio
+            setIsLooping(!isLooping);
+            if (window.currentLocalAudio) {
+              window.currentLocalAudio.loop = !isLooping;
+            }
+            setMessage({ success: `Loop ${!isLooping ? 'enabled' : 'disabled'}` });
+          } else {
+            if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+            try { const res = await axios.post('/api/player', { guildId, action: 'toggleLoop' }); setIsLooping(!!res.data.loop); setMessage({ success: `Loop ${res.data.loop ? 'enabled' : 'disabled'}` }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+          }
         }}><i className="material-icons">repeat</i></button>
         </div>
       </div>
@@ -432,21 +595,21 @@ function App() {
       <div style={{ marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 260 }}>
-            <label htmlFor="channelSelect" style={{ marginRight: 8 }}>Channel</label>
+            <label htmlFor="channelSelect" style={{ marginRight: 8, opacity: useLocalAudio ? 0.5 : 1 }}>Channel</label>
             <select id="channelSelect" aria-label="Select channel" value={channel} onChange={e => {
               const val = e.target.value;
               setChannel(val);
               const found = channels.find(c => c.id === val);
               if (found) setGuildId(found.guildId || '');
-            }} style={{ width: '33%', minWidth: 180 }}>
+            }} style={{ width: '33%', minWidth: 180, opacity: useLocalAudio ? 0.5 : 1 }} disabled={useLocalAudio}>
               <option value="">-- Select Channel --</option>
               {channels.map(ch => (
                 <option key={ch.id} value={ch.id}>{ch.label || ch.id}</option>
               ))}
             </select>
-            <button className="btn-compact" onClick={handleJoin} style={{ marginLeft: 8 }}>Join</button>
+            <button className="btn" onClick={handleJoin} style={{ marginLeft: 8, opacity: useLocalAudio ? 0.5 : 1 }} disabled={useLocalAudio}>Join</button>
             <button
-              className="btn-compact"
+              className="btn"
               onClick={async () => {
                 if (!guildId) return setMessage({ error: 'guildId required to leave' });
                 try {
@@ -462,57 +625,71 @@ function App() {
                   setMessage({ error: e.response?.data?.error || e.message });
                 }
               }}
-              style={{ marginLeft: 6 }}
-              disabled={!connectedGuilds.has(guildId)}
-              title={!guildId ? 'Select a channel/guild first' : (!connectedGuilds.has(guildId) ? 'Bot is not connected to the selected guild' : 'Leave this guild')}
+              style={{ marginLeft: 6, opacity: useLocalAudio ? 0.5 : 1 }}
+              disabled={useLocalAudio || !connectedGuilds.has(guildId)}
+              title={useLocalAudio ? 'Disabled when using local audio' : (!guildId ? 'Select a channel/guild first' : (!connectedGuilds.has(guildId) ? 'Bot is not connected to the selected guild' : 'Leave this guild'))}
             >Leave</button>
+
+            {/* Local audio playback toggle and device selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12 }}>
+              <button 
+                className={`btn-small ${useLocalAudio ? 'teal' : ''}`}
+                onClick={() => setUseLocalAudio(!useLocalAudio)}
+                title={useLocalAudio ? 'Local audio enabled' : 'Local audio disabled'}
+              >
+                <i className="material-icons" style={{ fontSize: 16 }}>speaker</i>
+              </button>
+              {useLocalAudio && (
+                <select
+                  id="audioDeviceSelect"
+                  name="audioDevice"
+                  value={selectedAudioDevice}
+                  onChange={(e) => setSelectedAudioDevice(e.target.value)}
+                  style={{ 
+                    display: 'block',
+                    visibility: 'visible',
+                    opacity: 1,
+                    padding: '6px 10px', 
+                    borderRadius: '4px', 
+                    border: '1px solid #ccc', 
+                    maxWidth: 300,
+                    minWidth: 200,
+                    fontFamily: 'Inter, sans-serif',
+                    fontSize: '14px',
+                    backgroundColor: 'white',
+                    cursor: 'pointer',
+                    position: 'relative',
+                    zIndex: 1
+                  }}
+                >
+                  {audioDevices.length > 0 ? (
+                    audioDevices.map(device => (
+                      <option key={device.id} value={device.id}>{device.name}</option>
+                    ))
+                  ) : (
+                    <option value="">No devices found</option>
+                  )}
+                </select>
+              )}
+            </div>
           </div>
 
           {/* Refresh remains visible regardless of join state; placed visually beside controls */}
           <div style={{ marginLeft: 'auto' }}>
-            <button className="btn-compact" onClick={fetchTracks}>Refresh</button>
-            <button className="btn-compact" onClick={async () => {
-              try {
-                const res = await axios.get('/api/state');
-                const dataStr = JSON.stringify(res.data && res.data.state ? res.data.state : res.data, null, 2);
-                const blob = new Blob([dataStr], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `oldeGuardian_state_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(url);
-                setMessage({ success: 'State downloaded' });
-              } catch (e) {
-                setMessage({ error: e.response?.data?.error || e.message });
-              }
-            }} style={{ marginLeft: 8 }}>Download state</button>
-            <button className="btn-compact" onClick={async () => {
-              try {
-                const res = await axios.get('/api/diag');
-                const tail = res.data && res.data.logTail ? res.data.logTail : [];
-                setLogLines(tail);
-                setShowLogs(true);
-                setLogPolling(true);
-              } catch (e) {
-                setMessage({ error: e.response?.data?.error || e.message });
-              }
-            }} style={{ marginLeft: 8 }}>Show logs</button>
+            <button className="btn" onClick={fetchTracks}>Refresh</button>
           </div>
         </div>
 
         {/* hidden add-channel line toggled by clickable text */}
         <div style={{ marginTop: 8 }}>
           {!showAddChannel ? (
-            <div style={{ color: 'var(--primary)', cursor: 'pointer', fontSize: 13 }} onClick={() => setShowAddChannel(true)}>click here to add another channel</div>
+            <div style={{ color: useLocalAudio ? '#999' : 'var(--primary)', cursor: useLocalAudio ? 'not-allowed' : 'pointer', fontSize: 13, opacity: useLocalAudio ? 0.5 : 1 }} onClick={() => { if (!useLocalAudio) setShowAddChannel(true); }}>click here to add another channel</div>
           ) : (
             <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
               <input placeholder="Label" value={newChannelLabel} onChange={e => setNewChannelLabel(e.target.value)} style={{ width: 120 }} />
               <input placeholder="Channel ID" value={newChannelId} onChange={e => setNewChannelId(e.target.value)} style={{ width: 200 }} />
               <input placeholder="Guild ID" value={newChannelGuildId} onChange={e => setNewChannelGuildId(e.target.value)} style={{ width: 200 }} />
-              <button className="btn-compact" onClick={() => {
+              <button className="btn" onClick={() => {
                 if (!newChannelId) return setMessage({ error: 'Channel ID required' });
                 if (!newChannelGuildId) return setMessage({ error: 'Guild ID required' });
                 const lbl = newChannelLabel || newChannelId;
@@ -520,7 +697,7 @@ function App() {
                 setNewChannelLabel(''); setNewChannelId(''); setNewChannelGuildId('');
                 setMessage({ success: `Added channel ${lbl}` });
               }}>Add</button>
-              <button className="btn-compact" onClick={() => setShowAddChannel(false)} style={{ marginLeft: 6 }}>Cancel</button>
+              <button className="btn" onClick={() => setShowAddChannel(false)} style={{ marginLeft: 6 }}>Cancel</button>
             </div>
           )}
         </div>
@@ -535,7 +712,7 @@ function App() {
             <strong>Backend log tail</strong>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div style={{ fontSize: 12, color: '#666' }}>{logPolling ? 'polling...' : ''}</div>
-              <button className="btn-compact" onClick={() => { setShowLogs(false); setLogLines([]); setLogPolling(false); }} style={{ marginLeft: 8 }}>Close</button>
+              <button className="btn" onClick={() => { setShowLogs(false); setLogLines([]); setLogPolling(false); }} style={{ marginLeft: 8 }}>Close</button>
             </div>
           </div>
           <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#222' }}>
@@ -591,7 +768,13 @@ function App() {
         <label>Music volume: </label>
         <input type="range" min="0" max="2" step="0.05" value={musicVolume} onChange={async e => {
           const v = Number(e.target.value); setMusicVolume(v);
-          if (guildId) {
+          
+          // Update local audio volume if playing locally
+          if (useLocalAudio && window.currentLocalAudio) {
+            window.currentLocalAudio.volume = v;
+          }
+          
+          if (guildId && !useLocalAudio) {
             try { 
               await axios.post('/api/volume', { guildId, musicVolume: v }); 
               // Also update the currently playing track's volume in real-time
@@ -629,7 +812,7 @@ function App() {
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ flex: 1 }}>{group}</span>
                     <button
-                      className="btn-small teal"
+                      className="btn-small"
                       onClick={async (e) => {
                         e.stopPropagation();
                         const fileCount = tracks.music[group].length;
@@ -751,7 +934,7 @@ function App() {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ flex: 1 }}>{group}</span>
                   <button
-                    className="btn-small teal"
+                    className="btn-small"
                     onClick={async (e) => {
                       e.stopPropagation();
                       const fileCount = tracks.soundEffects[group].length;
@@ -912,7 +1095,7 @@ function App() {
       )}
       {/* Global footer actions */}
       <div style={{ marginTop: 18, borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 10, display: 'flex', justifyContent: 'center' }}>
-        <button className="btn" disabled={disconnecting} onClick={async () => {
+        <button className="btn" disabled={useLocalAudio || disconnecting} onClick={async () => {
           if (!window.confirm('Disconnect the bot from all voice channels? This will stop playback and leave every guild voice channel.')) return;
           setDisconnecting(true);
           try {

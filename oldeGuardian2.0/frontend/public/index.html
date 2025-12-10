@@ -8,6 +8,8 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
     <!-- Material Icons -->
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <!-- Modern Tech Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       /* Theme variables - primary color set to hsl(219,60%,53%) */
       :root {
@@ -25,6 +27,27 @@
       body { 
         font-size: 14px;
         background-color: #e6e6e6;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      
+      h1, h2, h3, h4, h5, h6 {
+        font-family: 'JetBrains Mono', 'Inter', monospace;
+        font-weight: 600;
+      }
+      
+      input, select, textarea, button, .btn, .btn-compact {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      
+      /* Apply site fonts to Materialize elements */
+      .select-wrapper input, .select-dropdown, .dropdown-content {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+      }
+      .select-dropdown li, .dropdown-content li, .dropdown-content li > span {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+      }
+      .modal-content, .modal-footer {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
       /* small icon drop target styling */
       .root-drop-icon { display: inline-block; width: 32px; height: 32px; line-height: 32px; text-align: center; vertical-align: middle; margin-left: 8px; border-radius: 4px; }
@@ -265,27 +288,23 @@
     background-color: var(--primary) !important;
     box-shadow: 0 2px 6px rgba(17,60,160,0.12) !important;
   }
-  .btn:hover, .btn-large:hover, .waves-effect.btn:hover {
-    background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important;
-    box-shadow: 0 6px 18px rgba(17,60,160,0.14) !important;
-  }
-  /* Compact button variant: visually matches .btn but slightly smaller/tighter */
+  /* Compact button variant: now unified with .btn style */
   .btn-compact {
     background-color: var(--primary) !important;
     color: white !important;
-    padding: 0 8px !important;
-    min-width: 36px !important;
-    height: 30px !important;
-    line-height: 30px !important;
-    font-size: 13px !important;
+    padding: 0 10px !important;
+    min-width: 40px !important;
+    height: auto !important;
+    line-height: normal !important;
+    font-size: inherit !important;
     border-radius: 6px !important;
-    box-shadow: 0 2px 6px rgba(17,60,160,0.10) !important;
+    box-shadow: none !important;
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
   }
   .btn-compact .material-icons { font-size: 18px !important; }
-  .btn-compact:hover { transform: translateY(-1px); background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important; box-shadow: 0 6px 12px rgba(17,60,160,0.14) !important; }
+  .btn-compact:hover { transform: translateY(-1px); background-color: color-mix(in srgb, var(--primary) 85%, black 7%) !important; box-shadow: none !important; }
 
   /* Centered player controls container (placed under header) */
   .player-controls {
@@ -326,13 +345,54 @@
   /* Ensure flat buttons and small controls match */
   .btn-flat, .btn-small { color: var(--primary) !important; }
   /* Small icon button tweaks for player controls */
-  .btn .material-icons { vertical-align: middle; }
-  .btn[disabled] { opacity: 0.5; pointer-events: none; }
-  .btn { padding: 0 10px; min-width: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .btn { padding: 0 10px; min-width: 40px; display: inline-flex; align-items: center; justify-content: center; box-shadow: none !important; }
   .btn:hover { transform: translateY(-1px); }
-  /* Loop glow when active: white outer glow around icon */
-  .player-controls .btn.loop-on { box-shadow: 0 0 12px 2px rgba(255,255,255,0.9), 0 6px 18px rgba(17,60,160,0.12) !important; }
-  .player-controls .btn.loop-on .material-icons { filter: drop-shadow(0 0 6px rgba(255,255,255,0.95)); }
+  .btn-compact { box-shadow: none !important; }
+  
+  /* Default button styling (blue background with white icon, no shadow) */
+  .btn-small {
+    background-color: var(--primary) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+  .btn-small .material-icons {
+    color: white !important;
+  }
+  
+  /* Default button styling for delete/action buttons (blue background with white icon, no shadow) */
+  .delete-btn {
+    background-color: var(--primary) !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+  .delete-btn .material-icons {
+    color: white !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    position: relative !important;
+    top: -3px !important;
+  }
+  
+  /* Toggle button styling when active (ON state): white background, blue outline, blue icon, NO shadow */
+  .btn-small.teal { 
+    background-color: white !important; 
+    color: var(--primary) !important;
+    border: 2px solid var(--primary) !important;
+    box-shadow: none !important;
+  }
+  .btn-small.teal .material-icons { 
+    color: var(--primary) !important;
+  }
+  
+  /* Loop button styling - no shadow, just clean styling */
+  .player-controls .btn.loop-on { box-shadow: none !important; }
+  .player-controls .btn.loop-on .material-icons { color: var(--primary) !important; }
   /* Strong override: replace Materialize 'teal' utility classes used in the app
      with our --primary color. These rules use !important and specific selectors
      so they win over the default Materialize declarations. */
