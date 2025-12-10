@@ -31,38 +31,19 @@ function App() {
   const [logLines, setLogLines] = useState([]);
   const [logPolling, setLogPolling] = useState(false);
   const [useLocalAudio, setUseLocalAudio] = useState(false);
-  const [audioDevices, setAudioDevices] = useState([]);
-  const [selectedAudioDevice, setSelectedAudioDevice] = useState('default');
+
 
   useEffect(() => {
     fetchTracks();
   }, []);
 
   // initialize Materialize FormSelect when M is available and channels change
-  // Exclude audio device select to avoid DOM manipulation conflicts
   useEffect(() => {
     if (window.M) {
-      // Destroy any Materialize instance on audio device select if it exists
-      const audioSelect = document.getElementById('audioDeviceSelect');
-      if (audioSelect) {
-        const instance = window.M.FormSelect.getInstance(audioSelect);
-        if (instance) {
-          try {
-            instance.destroy();
-          } catch (e) {
-            console.warn('Failed to destroy Materialize instance on audio select:', e);
-          }
-        }
-      }
-      
-      // Initialize only non-audio device selects
-      const elems = document.querySelectorAll('select:not(#audioDeviceSelect)');
+      const elems = document.querySelectorAll('select');
       if (elems && elems.length) window.M.FormSelect.init(elems);
     }
-  }, [channels, useLocalAudio]);
-
-  // Note: We don't initialize Materialize FormSelect for the audio device dropdown
-  // to avoid DOM manipulation conflicts with React when toggling visibility
+  }, [channels]);
 
   // initialize Materialize Modal when M is available
   useEffect(() => {
@@ -72,33 +53,11 @@ function App() {
     }
   }, []);
 
-  // fetch available audio devices for local playback
-  useEffect(() => {
-    const fetchAudioDevices = async () => {
-      try {
-        console.log('Fetching audio devices...');
-        const res = await axios.get('/api/audio-devices');
-        console.log('Audio devices response:', res.data);
-        if (res.data && res.data.devices) {
-          console.log('Setting audio devices:', res.data.devices);
-          setAudioDevices(res.data.devices);
-          if (res.data.devices.length > 0) {
-            setSelectedAudioDevice(res.data.devices[0].id);
-          }
-        }
-      } catch (e) {
-        console.error('Failed to fetch audio devices:', e);
-        // Set empty array - UI will show "No devices found"
-        setAudioDevices([]);
-      }
-    };
-    fetchAudioDevices();
-  }, []);
+
 
   // Log useLocalAudio whenever it changes and cleanup on toggle
   useEffect(() => {
     console.log('useLocalAudio state updated:', useLocalAudio);
-    console.log('audioDevices state:', audioDevices);
     
     if (useLocalAudio) {
       // When toggling local audio ON, stop any Discord playback
@@ -117,11 +76,15 @@ function App() {
       if (window.currentLocalAudio) {
         window.currentLocalAudio.pause();
         window.currentLocalAudio = null;
-        setIsPlayingRemote(false);
-        setNowPlaying('');
-        setPosition(null);
-        setDuration(null);
       }
+      if (window.monitorAudio) {
+        window.monitorAudio.pause();
+        window.monitorAudio = null;
+      }
+      setIsPlayingRemote(false);
+      setNowPlaying('');
+      setPosition(null);
+      setDuration(null);
     }
   }, [useLocalAudio]);
 
@@ -349,7 +312,7 @@ function App() {
     }
     
     if (useLocalAudio) {
-      // Local audio playback - use browser's Audio API
+      // Local audio playback via browser Audio API
       try {
         // Stop any currently playing local audio
         if (window.currentLocalAudio) {
@@ -366,7 +329,9 @@ function App() {
         });
         
         audio.addEventListener('timeupdate', () => {
-          setPosition(Math.floor(audio.currentTime));
+          const pos = Math.floor(audio.currentTime);
+          setPosition(pos);
+          setLastPositionUpdate({ position: pos, timestamp: Date.now() });
         });
         
         audio.addEventListener('ended', () => {
@@ -458,13 +423,36 @@ function App() {
   }, [showLogs, logPolling]);
 
   const handleSfx = async (item) => {
-    if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required to play sfx.' });
-    try {
-      const name = item.name.replace(/\.[^.]+$/, ''); // strip extension
-      await axios.post('/api/sfx', { guildId, channel, name, volume: sfxVolume });
-      setMessage({ success: `Played SFX ${item.name}` });
-    } catch (err) {
-      setMessage({ error: err.response?.data?.error || err.message });
+    if (useLocalAudio) {
+      // Play SFX locally using browser Audio API
+      try {
+        console.log('SFX item:', item);
+        
+        // Use the same media endpoint as music tracks
+        const sfxPath = `/api/media?path=${encodeURIComponent(item.relPath || item.relativePath || `soundEffects/${item.name}`)}`;
+        
+        console.log('Attempting to play SFX from:', sfxPath);
+        
+        // Create and play audio element for SFX
+        const sfxAudio = new Audio(sfxPath);
+        sfxAudio.volume = sfxVolume;
+        
+        await sfxAudio.play();
+        setMessage({ success: `Played SFX ${item.name} locally` });
+      } catch (err) {
+        console.error('SFX playback error:', err);
+        setMessage({ error: `Failed to play SFX locally: ${err.message}` });
+      }
+    } else {
+      // Play SFX via Discord
+      if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required to play sfx.' });
+      try {
+        const name = item.name.replace(/\.[^.]+$/, ''); // strip extension
+        await axios.post('/api/sfx', { guildId, channel, name, volume: sfxVolume });
+        setMessage({ success: `Played SFX ${item.name}` });
+      } catch (err) {
+        setMessage({ error: err.response?.data?.error || err.message });
+      }
     }
   };
 
@@ -546,9 +534,9 @@ function App() {
             // Pause local audio
             if (window.currentLocalAudio) {
               window.currentLocalAudio.pause();
-              setIsPlayingRemote(false);
-              setMessage({ success: 'Paused' });
             }
+            setIsPlayingRemote(false);
+            setMessage({ success: 'Paused' });
           } else {
             if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
             try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
@@ -559,9 +547,9 @@ function App() {
             // Resume local audio
             if (window.currentLocalAudio) {
               window.currentLocalAudio.play();
-              setIsPlayingRemote(true);
-              setMessage({ success: 'Resumed' });
             }
+            setIsPlayingRemote(true);
+            setMessage({ success: 'Resumed' });
           } else {
             if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
             try {
@@ -636,40 +624,34 @@ function App() {
                 className={`btn-small ${useLocalAudio ? 'teal' : ''}`}
                 onClick={() => setUseLocalAudio(!useLocalAudio)}
                 title={useLocalAudio ? 'Local audio enabled' : 'Local audio disabled'}
+                style={{ display: 'flex', alignItems: 'center' }}
               >
-                <i className="material-icons" style={{ fontSize: 16 }}>speaker</i>
+                <i className="material-icons" style={{ fontSize: 16, marginRight: 4 }}>speaker</i>
+                Local
               </button>
               {useLocalAudio && (
-                <select
-                  id="audioDeviceSelect"
-                  name="audioDevice"
-                  value={selectedAudioDevice}
-                  onChange={(e) => setSelectedAudioDevice(e.target.value)}
-                  style={{ 
-                    display: 'block',
-                    visibility: 'visible',
-                    opacity: 1,
-                    padding: '6px 10px', 
-                    borderRadius: '4px', 
-                    border: '1px solid #ccc', 
-                    maxWidth: 300,
-                    minWidth: 200,
-                    fontFamily: 'Inter, sans-serif',
-                    fontSize: '14px',
-                    backgroundColor: 'white',
-                    cursor: 'pointer',
-                    position: 'relative',
-                    zIndex: 1
-                  }}
-                >
-                  {audioDevices.length > 0 ? (
-                    audioDevices.map(device => (
-                      <option key={device.id} value={device.id}>{device.name}</option>
-                    ))
-                  ) : (
-                    <option value="">No devices found</option>
-                  )}
-                </select>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ 
+                    fontSize: '13px', 
+                    color: '#666',
+                    padding: '6px 10px',
+                    background: '#f5f5f5',
+                    borderRadius: '4px',
+                    border: '1px solid #ddd'
+                  }}>
+                    Browser Default Device
+                  </span>
+                  <span 
+                    style={{ 
+                      fontSize: '12px', 
+                      color: '#666',
+                      fontStyle: 'italic'
+                    }}
+                    title="Audio will play through your system's default audio device. Change this in Windows Sound settings."
+                  >
+                    ℹ️ Uses system default
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -772,6 +754,9 @@ function App() {
           // Update local audio volume if playing locally
           if (useLocalAudio && window.currentLocalAudio) {
             window.currentLocalAudio.volume = v;
+          }
+          if (useLocalAudio && window.monitorAudio) {
+            window.monitorAudio.volume = v;
           }
           
           if (guildId && !useLocalAudio) {

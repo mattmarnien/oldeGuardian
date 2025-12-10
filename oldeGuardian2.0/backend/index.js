@@ -617,11 +617,19 @@ app.get('/api/audio-devices', (req, res) => {
         
         // Always include default option if we found devices
         if (devices.length > 0) {
+          // Map device names to IDs that can be used for audio routing
+          const mappedDevices = devices.map((d, idx) => ({
+            name: d.name || `Device ${idx + 1}`,
+            id: `device_${idx}`,
+            systemName: d.name || `Device ${idx + 1}`, // Keep original name for system routing
+            deviceIndex: idx // Store index for device mapping
+          }));
+          
           const result_devices = [
-            { name: 'Default Device', id: 'default' },
-            ...devices
+            { name: 'Default Device (System)', id: 'default', systemName: 'default', deviceIndex: -1 },
+            ...mappedDevices
           ];
-          console.log('[audio-devices] returning devices:', result_devices);
+          console.log('[audio-devices] returning devices:', result_devices.length, 'total');
           return res.json({ devices: result_devices });
         }
       } catch (psErr) {
@@ -1091,6 +1099,12 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
 
   return { success: true, playing: track, duration: typeof durationSeconds === 'number' ? Math.floor(durationSeconds) : null };
 }
+
+// Removed: /api/play-local endpoint - local audio now handled by browser Audio API
+
+
+// Removed: /api/stop-local, /api/pause-local, /api/resume-local endpoints
+// Local audio is now handled entirely by browser Audio API
 
 // Test endpoint: play a generated sine tone for quick verification
 app.post('/api/test-tone', async (req, res) => {
