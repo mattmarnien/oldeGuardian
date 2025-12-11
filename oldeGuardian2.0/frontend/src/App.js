@@ -529,7 +529,7 @@ function App() {
             try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
           }
         }}><i className="material-icons">stop</i></button>
-          <button className="btn" disabled={!isPlayingRemote} onClick={async () => {
+          <button className={`btn ${!isPlayingRemote && nowPlaying ? 'blue' : ''}`} disabled={!isPlayingRemote} onClick={async () => {
           if (useLocalAudio) {
             // Pause local audio
             if (window.currentLocalAudio) {
@@ -542,7 +542,7 @@ function App() {
             try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
           }
         }}><i className="material-icons">pause</i></button>
-  <button className="btn" disabled={isPlayingRemote || !nowPlaying} onClick={async () => {
+  <button className={`btn ${isPlayingRemote ? 'blue' : ''}`} disabled={isPlayingRemote || !nowPlaying} onClick={async () => {
           if (useLocalAudio) {
             // Resume local audio
             if (window.currentLocalAudio) {
@@ -564,7 +564,15 @@ function App() {
             } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
           }
         }}><i className="material-icons">play_arrow</i></button>
-  <button className={`btn ${isLooping ? 'teal loop-on' : ''}`} disabled={!nowPlaying} onClick={async () => {
+  <button 
+        className="btn" 
+        disabled={!nowPlaying} 
+        style={isLooping ? {
+          backgroundColor: 'white',
+          border: '2px solid #2196F3',
+          color: '#2196F3'
+        } : {}}
+        onClick={async () => {
           if (useLocalAudio) {
             // Toggle loop for local audio
             setIsLooping(!isLooping);
@@ -621,7 +629,7 @@ function App() {
             {/* Local audio playback toggle and device selector */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 12 }}>
               <button 
-                className={`btn-small ${useLocalAudio ? 'teal' : ''}`}
+                className={`btn-small ${useLocalAudio ? 'blue' : ''}`}
                 onClick={() => setUseLocalAudio(!useLocalAudio)}
                 title={useLocalAudio ? 'Local audio enabled' : 'Local audio disabled'}
                 style={{ display: 'flex', alignItems: 'center' }}
@@ -792,7 +800,7 @@ function App() {
                     setCollapsed(prev => ({ ...prev, [`music:${group}`]: false }));
                     attemptMove(rel, target);
                   }}
-                  className={`group-header ${dragOverTarget === ('music:' + group) ? 'teal lighten-4' : ''}`}
+                  className={`group-header ${dragOverTarget === ('music:' + group) ? 'blue lighten-4' : ''}`}
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ flex: 1 }}>{group}</span>
@@ -914,7 +922,7 @@ function App() {
                   setCollapsed(prev => ({ ...prev, [`sfx:${group}`]: false }));
                   attemptMove(rel, target);
                 }}
-                className={`group-header ${dragOverTarget === ('sfx:' + group) ? 'teal lighten-4' : ''}`}
+                className={`group-header ${dragOverTarget === ('sfx:' + group) ? 'blue lighten-4' : ''}`}
               >
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ flex: 1 }}>{group}</span>
