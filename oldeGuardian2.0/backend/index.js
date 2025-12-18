@@ -1,4 +1,44 @@
 require('dotenv').config();
+
+// Configure encryption libraries with AEAD support for Discord voice compatibility  
+let encryptionLibrary = 'none';
+try {
+  // First try sodium-native (best compatibility with AEAD modes)
+  const sodium = require('sodium-native');
+  if (sodium && sodium.crypto_aead_xchacha20poly1305_ietf_encrypt) {
+    encryptionLibrary = 'sodium-native';
+    console.log('[encryption] Using sodium-native with AEAD support for voice encryption');
+    console.log('[encryption] DAVE protocol support available via @snazzah/davey');
+  } else {
+    console.warn('[encryption] sodium-native found but missing AEAD functions');
+  }
+} catch (e) {
+  try {
+    // Try libsodium-wrappers as fallback
+    const sodium = require('libsodium-wrappers');
+    if (sodium) {
+      encryptionLibrary = 'libsodium-wrappers';  
+      console.log('[encryption] Using libsodium-wrappers for voice encryption');
+    }
+  } catch (e2) {
+    try {
+      // Final fallback to tweetnacl
+      const nacl = require('tweetnacl');
+      if (nacl) {
+        encryptionLibrary = 'tweetnacl';
+        console.log('[encryption] Using tweetnacl for voice encryption (limited compatibility)');
+      }
+    } catch (e3) {
+      console.error('[encryption] No compatible encryption library available - voice connections will fail');
+    }
+  }
+}
+
+// Set environment variable to help @discordjs/voice find sodium
+if (encryptionLibrary !== 'none') {
+  process.env.SODIUM_NATIVE = encryptionLibrary === 'sodium-native' ? '1' : '0';
+}
+
 const { Client, GatewayIntentBits } = require('discord.js');
 const express = require('express');
 const SpotifyWebApi = require('spotify-web-api-node');
@@ -332,10 +372,18 @@ app.post('/api/join', async (req, res) => {
     } catch (e) {}
     // wait for the connection to be ready (best-effort)
     try {
-      await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+      await entersState(connection, VoiceConnectionStatus.Ready, 45000);
       try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [join] connection entered Ready\n`); } catch (e) {}
     } catch (e) {
-      console.warn('[join] connection did not become Ready within timeout', e && e.message);
+      const currentStatus = connection.state?.status || 'unknown';
+      console.warn(`[join] connection did not become Ready within timeout. Current status: ${currentStatus}. Error:`, e && e.message);
+      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [join] connection timeout - status: ${currentStatus}, error: ${e && e.message}\n`); } catch (e) {}
+      
+      // Log if it's specifically an encryption issue
+      if (e && e.message && (e.message.includes('encryption') || e.message.includes('sodium'))) {
+        console.error('[join] ENCRYPTION ERROR - This may be due to missing or incompatible sodium libraries');
+        try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [join] ENCRYPTION ERROR detected: ${e.message}\n`); } catch (e) {}
+      }
     }
   res.json({ success: true, channel: voiceChannel.name, channelId: voiceChannel.id, ready: connection.state && connection.state.status === 'ready' });
   } catch (err) {
@@ -752,14 +800,79 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
   await guild.channels.fetch();
   const voiceChannel = guild.channels.cache.find(c => c.type === 2 && (c.id === channel || c.name === channel));
   if (!voiceChannel) throw new Error('Voice channel not found');
+  
+  // Ensure voice adapter is available
+  if (!guild.voiceAdapterCreator) {
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] Warning: voiceAdapterCreator not available, this may cause connection issues\n`); } catch (e) {}
+    throw new Error('Voice adapter not available - bot may not have proper permissions');
+  }
 
-  const connection = joinVoiceChannel({ channelId: voiceChannel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator });
+  // Create voice connection with enhanced encryption compatibility settings
+  let connection;
+  try {
+    connection = joinVoiceChannel({ 
+      channelId: voiceChannel.id, 
+      guildId: guild.id, 
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false,
+      debug: false
+    });
+    
+    // Log connection creation and encryption info
+    console.log('[voice] Voice connection created, waiting for encryption negotiation...');
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [voice] Connection created with encryption library: ${encryptionLibrary}\n`); } catch (e) {}
+  } catch (e) {
+    console.error('[voice] Failed to create voice connection:', e.message);
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [voice] Connection creation failed: ${e.message}\n`); } catch (e) {}
+    throw new Error(`Voice connection failed: ${e.message}`);
+  }
   connections.set(guildId, connection);
   // persist a simple connection record so server restarts can attempt to rejoin
   try { persistedState.connections[guildId] = { channelId: voiceChannel.id }; saveStateToDisk(); } catch (e) {}
-  connection.on(VoiceConnectionStatus.Ready, () => console.log('[connection] Ready'));
-  connection.on(VoiceConnectionStatus.Disconnected, () => console.log('[connection] Disconnected'));
-  connection.on('error', (err) => console.error('[connection] error', err));
+  
+  // Add better error handling for connection states
+  connection.on(VoiceConnectionStatus.Ready, () => {
+    console.log('[connection] Ready');
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] Voice connection reached Ready state\n`); } catch (e) {}
+  });
+  connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
+    console.log('[connection] Disconnected, reason:', newState.reason);
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] Voice connection disconnected, reason: ${newState.reason}, closeCode: ${newState.closeCode || 'none'}\n`); } catch (e) {}
+    
+    // Handle different disconnection reasons
+    if (newState.reason === VoiceConnectionStatus.WebSocketClose) {
+      if (newState.closeCode === 4014) {
+        console.log('[connection] Attempting to reconnect due to disallowed intents');
+        try {
+          await entersState(connection, VoiceConnectionStatus.Connecting, 5000);
+        } catch {
+          connection.rejoin({
+            channelId: voiceChannel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
+          });
+        }
+      } else if (newState.closeCode === 4006) {
+        console.log('[connection] Session invalid, creating new connection');
+        // Don't rejoin automatically for invalid session, let it be handled manually
+      }
+    }
+  });
+  connection.on(VoiceConnectionStatus.Connecting, () => {
+    console.log('[connection] Connecting');
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] Voice connection attempting to connect\n`); } catch (e) {}
+  });
+  connection.on(VoiceConnectionStatus.Signalling, () => {
+    console.log('[connection] Signalling');
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] Voice connection signalling\n`); } catch (e) {}
+  });
+  connection.on('error', (err) => {
+    console.error('[connection] error', err);
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] Voice connection error: ${err && (err.stack || err.message)}\n`); } catch (e) {}
+  });
   try {
     connection.on('stateChange', (oldState, newState) => {
       try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [connection] stateChange ${oldState.status} -> ${newState.status}\n`); } catch (e) {}
@@ -779,11 +892,33 @@ async function playTrack({ guildId, channel, track, volume, isSfx = false, start
   try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] queued track path: ${musicPath}\n`); } catch (e) {}
 
   try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] connection.state before subscribe: ${JSON.stringify({ status: connection.state && connection.state.status, ready: connection.state && connection.state.status === 'ready' })}\n`); } catch (e) {}
+  // Wait for connection to be ready with better error handling
+  let connectionReady = false;
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+    await entersState(connection, VoiceConnectionStatus.Ready, 45000);
     console.log('[play] connection entered Ready state');
+    connectionReady = true;
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] connection successfully reached Ready state\n`); } catch (e) {}
   } catch (e) {
-    console.warn('[play] connection did not become Ready within timeout, proceeding to subscribe anyway', e && e.message);
+    const currentStatus = connection.state?.status || 'unknown';
+    console.warn(`[play] connection did not become Ready within timeout. Current status: ${currentStatus}. Error:`, e && e.message);
+    try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] connection timeout - status: ${currentStatus}, error: ${e && e.message}\n`); } catch (e) {}
+    
+    // Check if it's an encryption error and try to proceed anyway
+    if (e && e.message && e.message.includes('encryption')) {
+      console.log('[play] Encryption error detected, but attempting to continue...');
+      try { require('fs').appendFileSync(path.join(__dirname, '..', '..', 'backend.log'), `[${new Date().toISOString()}] [play] Attempting to proceed despite encryption error\n`); } catch (e) {}
+    } else if (currentStatus === 'signalling' || currentStatus === 'connecting') {
+      // If still connecting, wait a bit more
+      console.log('[play] Still connecting, waiting additional time...');
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        if (connection.state?.status === 'ready') {
+          connectionReady = true;
+          console.log('[play] Connection became ready during extended wait');
+        }
+      } catch (e2) {}
+    }
   }
 
   const guildPlayer = getPlayerForGuild(guildId);
@@ -1087,7 +1222,7 @@ if (require.main === module) {
 
   const disableDiscord = String(process.env.DISABLE_DISCORD || '') === '1';
   if (!disableDiscord) {
-    client.once('ready', () => {
+    client.once('clientReady', () => {
       console.log(`Discord bot logged in as ${client.user.tag}`);
       // attempt to restore persisted connections and nowPlaying
       (async () => {

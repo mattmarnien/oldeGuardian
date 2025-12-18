@@ -31,9 +31,40 @@ function App() {
   const [logLines, setLogLines] = useState([]);
   const [logPolling, setLogPolling] = useState(false);
 
+  // Local audio player state
+  const [localAudioMode, setLocalAudioMode] = useState(false);
+  const [localAudio, setLocalAudio] = useState(null);
+  const [localVolume, setLocalVolume] = useState(1.0);
+  const [localIsPlaying, setLocalIsPlaying] = useState(false);
+  const [localCurrentTrack, setLocalCurrentTrack] = useState(null);
+  const [localPosition, setLocalPosition] = useState(0);
+  const [localDuration, setLocalDuration] = useState(0);
+
   useEffect(() => {
     fetchTracks();
   }, []);
+
+  // Manage local audio element
+  useEffect(() => {
+    if (localAudio) {
+      const handleTimeUpdate = () => setLocalPosition(localAudio.currentTime || 0);
+      const handleLoadedMetadata = () => setLocalDuration(localAudio.duration || 0);
+      const handleEnded = () => {
+        setLocalIsPlaying(false);
+        setLocalPosition(0);
+      };
+
+      localAudio.addEventListener('timeupdate', handleTimeUpdate);
+      localAudio.addEventListener('loadedmetadata', handleLoadedMetadata);
+      localAudio.addEventListener('ended', handleEnded);
+
+      return () => {
+        localAudio.removeEventListener('timeupdate', handleTimeUpdate);
+        localAudio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+        localAudio.removeEventListener('ended', handleEnded);
+      };
+    }
+  }, [localAudio]);
 
   // initialize Materialize FormSelect when M is available and channels change
   useEffect(() => {
@@ -269,24 +300,65 @@ function App() {
   };
 
   const handlePlay = async (track) => {
-    if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required to play.' });
-    try {
-      const res = await axios.post('/api/play', { guildId, channel, track: track.relPath });
-      setMessage({ success: `Playing ${track.name}` });
-      setNowPlaying(track.name || track.relPath || 'Unknown');
-      // mark player as playing so Pause becomes active immediately
-      setIsPlayingRemote(true);
-      // reset progress display when starting a new track
-      setPosition(0);
-      setLastPositionUpdate({ position: 0, timestamp: Date.now() });
-      // set duration if backend provided it
-      if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
-      else {
-        // fallback: probe the track file for duration
-        try { probeDuration(track.relPath).then(d => { if (d) setDuration(d); }); } catch (e) {}
+    if (localAudioMode) {
+      // Local audio playback
+      try {
+        if (localAudio) {
+          localAudio.pause();
+          localAudio.removeEventListener('timeupdate', updateLocalPosition);
+          localAudio.removeEventListener('ended', onLocalEnded);
+        }
+        
+        const audio = new Audio(`/api/media?path=${encodeURIComponent(track.relPath)}`);
+        audio.volume = localVolume;
+        
+        const updateLocalPosition = () => {
+          setLocalPosition(audio.currentTime);
+        };
+        
+        const onLocalEnded = () => {
+          setLocalIsPlaying(false);
+          setLocalPosition(0);
+        };
+        
+        audio.addEventListener('loadedmetadata', () => {
+          setLocalDuration(audio.duration);
+        });
+        
+        audio.addEventListener('timeupdate', updateLocalPosition);
+        audio.addEventListener('ended', onLocalEnded);
+        
+        await audio.play();
+        
+        setLocalAudio(audio);
+        setLocalIsPlaying(true);
+        setLocalCurrentTrack(track);
+        setNowPlaying(`[LOCAL] ${track.name}`);
+        setMessage({ success: `Playing locally: ${track.name}` });
+      } catch (err) {
+        setMessage({ error: `Local playback failed: ${err.message}` });
       }
-    } catch (err) {
-      setMessage({ error: err.response?.data?.error || err.message });
+    } else {
+      // Discord voice channel playback
+      if (!guildId || !channel) return setMessage({ error: 'Guild ID and channel required for Discord playback.' });
+      try {
+        const res = await axios.post('/api/play', { guildId, channel, track: track.relPath });
+        setMessage({ success: `Playing on Discord: ${track.name}` });
+        setNowPlaying(track.name || track.relPath || 'Unknown');
+        // mark player as playing so Pause becomes active immediately
+        setIsPlayingRemote(true);
+        // reset progress display when starting a new track
+        setPosition(0);
+        setLastPositionUpdate({ position: 0, timestamp: Date.now() });
+        // set duration if backend provided it
+        if (res && res.data && typeof res.data.duration === 'number') setDuration(res.data.duration);
+        else {
+          // fallback: probe the track file for duration
+          try { probeDuration(track.relPath).then(d => { if (d) setDuration(d); }); } catch (e) {}
+        }
+      } catch (err) {
+        setMessage({ error: err.response?.data?.error || err.message });
+      }
     }
   };
 
@@ -346,6 +418,54 @@ function App() {
     }
   };
 
+  // Local audio control functions
+  const playPauseLocal = () => {
+    if (!localAudio) return;
+    
+    if (localIsPlaying) {
+      localAudio.pause();
+      setLocalIsPlaying(false);
+    } else {
+      localAudio.play();
+      setLocalIsPlaying(true);
+    }
+  };
+
+  const stopLocal = () => {
+    if (localAudio) {
+      localAudio.pause();
+      localAudio.currentTime = 0;
+      setLocalIsPlaying(false);
+      setLocalPosition(0);
+      setNowPlaying('');
+    }
+  };
+
+  const seekLocal = (position) => {
+    if (localAudio) {
+      localAudio.currentTime = position;
+      setLocalPosition(position);
+    }
+  };
+
+  const setLocalVol = (volume) => {
+    setLocalVolume(volume);
+    if (localAudio) {
+      localAudio.volume = volume;
+    }
+  };
+
+  // Clean up local audio when component unmounts
+  useEffect(() => {
+    return () => {
+      if (localAudio) {
+        localAudio.pause();
+        localAudio.removeEventListener('timeupdate', () => {});
+        localAudio.removeEventListener('ended', () => {});
+      }
+    };
+  }, [localAudio]);
+
   return (
     <div className="App" style={{ padding: 20 }}>
       {/* Centered header with placeholder skull image */}
@@ -367,24 +487,36 @@ function App() {
         </div>
           <div style={{ width: 300, minWidth: 160 }}>
             <div>
-              {duration ? (
+              {(localAudioMode ? localDuration : duration) ? (
                 <div>
                   <input
                     type="range"
                     min={0}
-                    max={duration}
+                    max={localAudioMode ? localDuration : duration}
                     step={1}
-                    value={position != null ? position : 0}
-                    onChange={e => { setSeeking(true); setPosition(Number(e.target.value)); }}
+                    value={localAudioMode ? localPosition : (position != null ? position : 0)}
+                    onChange={e => {
+                      if (localAudioMode) {
+                        const pos = Number(e.target.value);
+                        seekLocal(pos);
+                      } else {
+                        setSeeking(true); 
+                        setPosition(Number(e.target.value));
+                      }
+                    }}
                     onMouseUp={async e => {
-                      setSeeking(false);
-                      const pos = Number(e.target.value);
-                      try { await axios.post('/api/seek', { guildId, position: pos }); setMessage({ success: `Seeked to ${pos}s` }); } catch (err) { setMessage({ error: err.response?.data?.error || err.message }); }
+                      if (!localAudioMode) {
+                        setSeeking(false);
+                        const pos = Number(e.target.value);
+                        try { await axios.post('/api/seek', { guildId, position: pos }); setMessage({ success: `Seeked to ${pos}s` }); } catch (err) { setMessage({ error: err.response?.data?.error || err.message }); }
+                      }
                     }}
                     onTouchEnd={async e => {
-                      setSeeking(false);
-                      const pos = Number(e.target.value);
-                      try { await axios.post('/api/seek', { guildId, position: pos }); setMessage({ success: `Seeked to ${pos}s` }); } catch (err) { setMessage({ error: err.response?.data?.error || err.message }); }
+                      if (!localAudioMode) {
+                        setSeeking(false);
+                        const pos = Number(e.target.value);
+                        try { await axios.post('/api/seek', { guildId, position: pos }); setMessage({ success: `Seeked to ${pos}s` }); } catch (err) { setMessage({ error: err.response?.data?.error || err.message }); }
+                      }
                     }}
                     style={{ width: '100%' }}
                   />
@@ -401,14 +533,29 @@ function App() {
             </div>
           </div>
         <div className="player-controls" role="group" aria-label="Player controls">
-          <button className="btn" disabled={!isConnected || !nowPlaying} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
-        }}><i className="material-icons">stop</i></button>
-          <button className="btn" disabled={!isConnected || !isPlayingRemote} onClick={async () => {
-          if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
-          try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
-        }}><i className="material-icons">pause</i></button>
+          {localAudioMode ? (
+            // Local audio controls
+            <>
+              <button className="btn" onClick={stopLocal} disabled={!localAudio}>
+                <i className="material-icons">stop</i>
+              </button>
+              <button className="btn" onClick={playPauseLocal} disabled={!localAudio}>
+                <i className="material-icons">{localIsPlaying ? 'pause' : 'play_arrow'}</i>
+              </button>
+            </>
+          ) : (
+            // Discord controls
+            <>
+              <button className="btn" disabled={!isConnected || !nowPlaying} onClick={async () => {
+                if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+                try { await axios.post('/api/player', { guildId, action: 'stop' }); setIsPlayingRemote(false); setNowPlaying(''); setPosition(null); setDuration(null); setMessage({ success: 'Stopped' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+              }}><i className="material-icons">stop</i></button>
+              <button className="btn" disabled={!isConnected || !isPlayingRemote} onClick={async () => {
+                if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
+                try { await axios.post('/api/player', { guildId, action: 'pause' }); setIsPlayingRemote(false); setMessage({ success: 'Paused' }); } catch (e) { setMessage({ error: e.response?.data?.error || e.message }); }
+              }}><i className="material-icons">pause</i></button>
+            </>
+          )}
   <button className="btn" disabled={!isConnected || isPlayingRemote} onClick={async () => {
           if (!guildId) return setMessage({ error: 'Select guild/channel before controlling player' });
           try {
@@ -466,6 +613,18 @@ function App() {
               disabled={!connectedGuilds.has(guildId)}
               title={!guildId ? 'Select a channel/guild first' : (!connectedGuilds.has(guildId) ? 'Bot is not connected to the selected guild' : 'Leave this guild')}
             >Leave</button>
+            <button className={`btn-compact ${localAudioMode ? 'teal' : 'grey'}`} onClick={() => {
+              setLocalAudioMode(!localAudioMode);
+              if (!localAudioMode) {
+                setMessage({ success: 'Local audio mode enabled' });
+              } else {
+                setMessage({ success: 'Discord mode enabled' });
+                stopLocal();
+              }
+            }} title={localAudioMode ? 'Switch to Discord playback' : 'Switch to local playback'} style={{ marginLeft: 6 }}>
+              <i className="material-icons" style={{ fontSize: '16px', marginRight: '4px' }}>{localAudioMode ? 'volume_up' : 'hearing'}</i>
+              {localAudioMode ? 'Local' : 'Discord'}
+            </button>
           </div>
 
           {/* Refresh remains visible regardless of join state; placed visually beside controls */}
@@ -588,18 +747,23 @@ function App() {
             }}><i className="material-icons" style={{ fontSize: 20, marginRight: 4 }}>create_new_folder</i>Create Folder</button>
           </div>
           <div style={{ marginBottom: 8 }}>
-        <label>Music volume: </label>
-        <input type="range" min="0" max="2" step="0.05" value={musicVolume} onChange={async e => {
-          const v = Number(e.target.value); setMusicVolume(v);
-          if (guildId) {
-            try { 
-              await axios.post('/api/volume', { guildId, musicVolume: v }); 
-              // Also update the currently playing track's volume in real-time
-              await axios.post('/api/update-volume', { guildId });
-            } catch (e) { /* ignore */ }
-          }
-        }} style={{ width: 300 }} />
-        <span style={{ marginLeft: 8 }}>{musicVolume.toFixed(2)}</span>
+        <label>{localAudioMode ? 'Local volume:' : 'Music volume:'} </label>
+          <input type="range" min="0" max={localAudioMode ? "1" : "2"} step="0.05" value={localAudioMode ? localVolume : musicVolume} onChange={async e => {
+            const v = Number(e.target.value);
+            if (localAudioMode) {
+              setLocalVol(v);
+            } else {
+              setMusicVolume(v);
+              if (guildId) {
+                try { 
+                  await axios.post('/api/volume', { guildId, musicVolume: v }); 
+                  // Also update the currently playing track's volume in real-time
+                  await axios.post('/api/update-volume', { guildId });
+                } catch (e) { /* ignore */ }
+              }
+            }
+          }} style={{ width: 300 }} />
+          <span style={{ marginLeft: 8 }}>{(localAudioMode ? localVolume : musicVolume).toFixed(2)}</span>
           </div>
           {/* moved Refresh to top near join */}
           {/* list area is scrollable so header and controls stay visible */}
@@ -715,16 +879,7 @@ function App() {
               modal.open();
             }}><i className="material-icons" style={{ fontSize: 20, marginRight: 4 }}>create_new_folder</i>Create Folder</button>
           </div>
-          <div style={{ marginBottom: 8 }}>
-        <label>SFX volume: </label>
-          <input type="range" min="0" max="2" step="0.05" value={sfxVolume} onChange={async e => {
-            const v = Number(e.target.value); setSfxVolume(v);
-            if (guildId) {
-              try { await axios.post('/api/volume', { guildId, sfxVolume: v }); } catch (e) { /* ignore */ }
-            }
-          }} style={{ width: 300 }} />
-          <span style={{ marginLeft: 8 }}>{sfxVolume.toFixed(2)}</span>
-          </div>
+
           {/* list area is scrollable so header and controls stay visible */}
           <div style={{ overflowY: 'auto', maxHeight: '60vh', paddingRight: 8 }}>
           {/* root drop target moved to header icon */}
